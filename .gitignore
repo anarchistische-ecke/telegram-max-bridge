@@ -1,0 +1,4 @@
+# This Git repository publishes the bridge from a shared workspace.
+/*
+!/.gitignore
+!/telegram-max-bridge/
