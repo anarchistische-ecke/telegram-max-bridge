@@ -215,8 +215,7 @@ final class Bridge {
         if (source == null) {
             return;
         }
-        String title = safeTitle(first(text(source, "title"), chat));
-        String header = maxAttribution(message, displayName(sender)) + " · MAX / " + title;
+        String header = maxHeader(message, displayName(sender), source);
         deliverRoutes("max", chat, routes, target -> {
             var origin = new Store.Origin(target, "max", chat, mid, null);
             sendMaxContentToTelegram(job, message, target.id(), null, null, header,
@@ -245,7 +244,7 @@ final class Bridge {
         if (channel != null && (user == null || access.isMember("max", chat, user))) {
             // MAX omits the sender when a reply is published on behalf of the channel.
             String author = user == null ? first(text(channel, "title"), "Канал") : displayName(sender);
-            returnReply(job, message, origin, author);
+            returnReply(job, message, origin, author, channel);
         }
     }
 
@@ -266,8 +265,9 @@ final class Bridge {
             }
             return false;
         }
-        if (access.target(chat, user) != null) {
-            returnReply(job, message, origin, displayName(message.path("sender")));
+        var group = access.target(chat, user);
+        if (group != null) {
+            returnReply(job, message, origin, displayName(message.path("sender")), group);
         }
         return true;
     }
@@ -500,12 +500,12 @@ final class Bridge {
         }
     }
 
-    private void returnReply(Store.Job job, JsonNode message, Store.Origin origin, String author) {
+    private void returnReply(Store.Job job, JsonNode message, Store.Origin origin, String author, JsonNode chat) {
         if (access.source(origin.platform(), origin.source()) == null) {
             return;
         }
         if (origin.platform().equals("telegram")) {
-            String header = maxAttribution(message, author) + " · MAX";
+            String header = maxHeader(message, author, chat);
             sendMaxContentToTelegram(job, message, origin.source(), origin.message(), origin.thread(), header, "return", null);
             return;
         }

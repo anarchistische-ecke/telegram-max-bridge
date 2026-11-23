@@ -106,10 +106,11 @@ final class Content {
                 seconds > 0 ? Instant.ofEpochSecond(seconds) : null);
     }
 
-    static String maxAttribution(JsonNode message, String author) {
+    static String maxHeader(JsonNode message, String author, JsonNode chat) {
         long milliseconds = message.path("timestamp").asLong(0);
+        String title = first(safeTitle(text(chat, "title")), text(message.path("recipient"), "chat_id"));
         return attribution(author, text(message.path("sender"), "username"),
-                milliseconds > 0 ? Instant.ofEpochMilli(milliseconds) : null);
+                milliseconds > 0 ? Instant.ofEpochMilli(milliseconds) : null) + " · MAX / " + title;
     }
 
     private static String attribution(String author, String username, Instant time) {

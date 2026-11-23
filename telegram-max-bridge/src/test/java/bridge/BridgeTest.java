@@ -95,7 +95,7 @@ class BridgeTest {
         assertEquals(1, replies.size());
         assertEquals(88, replies.getFirst().path("reply_parameters").path("message_id").asInt());
         assertEquals(17, replies.getFirst().path("message_thread_id").asInt());
-        assertEquals("Lena (ник не указан, 23.11.2026 13:09:12 МСК) · MAX\n\n/help needs a reply",
+        assertEquals("Lena (ник не указан, 23.11.2026 13:09:12 МСК) · MAX / Room " + MAX_GROUP + "\n\n/help needs a reply",
                 text(replies.getFirst(), "text"));
     }
 
@@ -127,11 +127,12 @@ class BridgeTest {
 
         var replies = rig.platforms.telegramSends.stream().filter(body -> body.has("reply_parameters")).toList();
         assertEquals(3, replies.size());
-        assertEquals("Lena (ник не указан, 23.11.2026 13:15:25 МСК) · MAX\n\nКомментарий",
+        assertEquals("Lena (ник не указан, 23.11.2026 13:15:25 МСК) · MAX / Room " + MAX_CHANNEL + "\n\nКомментарий",
                 text(replies.getFirst(), "text"));
-        assertEquals("Lena (ник не указан, время не указано) · MAX\n\nОтвет на комментарий",
+        assertEquals("Lena (ник не указан, время не указано) · MAX / Room " + MAX_CHANNEL + "\n\nОтвет на комментарий",
                 text(replies.get(1), "text"));
-        assertEquals("Room " + MAX_CHANNEL + " (ник не указан, 23.11.2026 13:17:18 МСК) · MAX\n\nОтвет от имени канала",
+        assertEquals("Room " + MAX_CHANNEL + " (ник не указан, 23.11.2026 13:17:18 МСК) · MAX / Room " + MAX_CHANNEL
+                        + "\n\nОтвет от имени канала",
                 text(replies.getLast(), "text"));
         for (var reply : replies) {
             assertEquals(TG_GROUP, reply.path("chat_id").asLong());
