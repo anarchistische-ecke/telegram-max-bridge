@@ -142,6 +142,56 @@ class BridgeTest {
     }
 
     @Test
+    void existingMaxDestinationCanAlsoForwardChannelPostsWithoutEchoes() throws Exception {
+        rig = new Rig(temp);
+        rig.route(TG_OWNER, MAX_OWNER, TG_GROUP, MAX_CHANNEL, "all");
+        rig.platforms.channelWrite = false;
+        rig.telegram("/start", TG_OWNER, TG_OWNER, 2);
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Новый профиль"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("MAX → Telegram"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Room " + MAX_CHANNEL + " · канал"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Dispatch"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Все сообщения"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Создать и запустить"));
+        var reverse = rig.store.routes("max", Long.toString(MAX_OWNER), 0, 8).getFirst();
+        assertEquals(Long.toString(MAX_CHANNEL), reverse.source());
+        assertEquals(Long.toString(TG_GROUP), reverse.target());
+        assertTrue(reverse.active());
+
+        var post = rig.maxChannelPost("Пост канала MAX", null, null);
+        rig.send("max", post);
+        assertEquals("Room " + MAX_CHANNEL + " (ник не указан, время не указано) · MAX / Room " + MAX_CHANNEL
+                + "\n\nПост канала MAX", rig.lastTelegram());
+        int mirroredPost = rig.platforms.telegramMessageId;
+        int telegramSends = rig.platforms.telegramSends.size();
+
+        rig.platforms.channelWrite = true;
+        rig.platforms.blockOn = "Новость из Telegram";
+        try {
+            rig.post("telegram", rig.telegramEvent("Новость из Telegram", TG_OWNER, TG_GROUP, 89), true);
+            assertTrue(rig.platforms.blockEntered.await(4, TimeUnit.SECONDS));
+            var forward = rig.platforms.to(MAX_CHANNEL).getFirst();
+            rig.post("max", rig.maxChannelPost(text(forward.body(), "text"), forward.mid(), null), true);
+            await(() -> rig.store.ready(Set.of("telegram:" + TG_GROUP), 10).isEmpty());
+        } finally {
+            rig.platforms.blockRelease.countDown();
+        }
+        rig.awaitIdle();
+        assertEquals(telegramSends, rig.platforms.telegramSends.size());
+
+        var reply = rig.telegramEvent("Ответ на пост", TG_OTHER, TG_GROUP, 90);
+        ((ObjectNode) reply.path("message")).set("reply_to_message", object("message_id", mirroredPost,
+                "from", object("id", TG_BOT, "is_bot", true)));
+        rig.send("telegram", reply);
+        String originalPost = text(post.path("message").path("body"), "mid");
+        var returned = rig.platforms.to(MAX_CHANNEL).getLast();
+        assertEquals(2, rig.platforms.to(MAX_CHANNEL).size());
+        assertEquals(object("type", "reply", "mid", originalPost), returned.body().path("link"));
+        rig.send("max", rig.maxChannelPost(text(returned.body(), "text"), returned.mid(), originalPost));
+        assertEquals(telegramSends, rig.platforms.telegramSends.size());
+    }
+
+    @Test
     void protectsProfileOwnershipAndRechecksMembership() throws Exception {
         rig = new Rig(temp);
         rig.route(TG_OWNER, MAX_OWNER, TG_GROUP, MAX_GROUP, "include urgent");
@@ -797,6 +847,14 @@ class BridgeTest {
                         "sender", object("user_id", MAX_BOT)));
             }
             return object("update_type", "message_created", "message", message);
+        }
+
+        ObjectNode maxChannelPost(String text, String mid, String reply) {
+            var event = maxEvent(text, MAX_OWNER, MAX_CHANNEL, "channel", reply);
+            var message = (ObjectNode) event.path("message");
+            message.remove("sender");
+            if (mid != null) ((ObjectNode) message.path("body")).put("mid", mid);
+            return event;
         }
 
         ObjectNode maxComment(String text, long user, String post) {

@@ -172,21 +172,28 @@ final class Bridge {
         var recipient = message.path("recipient");
         String chat = value(recipient, "chat_id");
         String kind = text(recipient, "chat_type");
-        if (chat != null && List.of("chat", "channel").contains(kind)) {
-            store.rememberMaxChat(chat);
-        }
-        if (kind.equals("channel")) {
-            var link = message.path("link");
-            if (text(link, "type").equals("reply") && text(recipient, "post_id").isEmpty()) {
-                handleMaxChannelReply(job, message, text(link.path("message"), "mid"));
-            }
-            return;
-        }
         var sender = message.path("sender");
         String user = value(sender, "user_id");
         var body = message.path("body");
         String mid = text(body, "mid");
-        if (user == null || user.equals(maxBotId) || mid.isEmpty()) {
+        if (chat != null && List.of("chat", "channel").contains(kind)) {
+            store.rememberMaxChat(chat);
+        }
+        if (maxBotId.equals(user) || mid.isEmpty()) {
+            return;
+        }
+        if (kind.equals("channel")) {
+            if (chat == null || !text(recipient, "post_id").isEmpty() || ownMaxChannelPost(job, chat, mid)) {
+                return;
+            }
+            var link = message.path("link");
+            if (!text(link, "type").equals("reply")
+                    || !handleMaxChannelReply(job, message, text(link.path("message"), "mid"))) {
+                forwardMaxMessage(job, message, chat, mid);
+            }
+            return;
+        }
+        if (user == null) {
             return;
         }
         var command = sender.path("is_bot").asBoolean(false) ? null : commands.parse("max", text(body, "text"));
@@ -210,12 +217,18 @@ final class Bridge {
             }
             return;
         }
+        forwardMaxMessage(job, message, chat, mid);
+    }
+
+    private void forwardMaxMessage(Store.Job job, JsonNode message, String chat, String mid) {
         var routes = matchingRoutes(job, chat, maxFilterText(message));
         var source = routes.isEmpty() ? null : access.source("max", chat);
         if (source == null) {
             return;
         }
-        String header = maxHeader(message, displayName(sender), source);
+        var sender = message.path("sender");
+        String author = sender.isEmpty() ? first(text(source, "title"), "Канал") : displayName(sender);
+        String header = maxHeader(message, author, source);
         deliverRoutes("max", chat, routes, target -> {
             var origin = new Store.Origin(target, "max", chat, mid, null);
             sendMaxContentToTelegram(job, message, target.id(), null, null, header,
@@ -223,13 +236,26 @@ final class Bridge {
         });
     }
 
-    private void handleMaxChannelReply(Store.Job job, JsonNode message, String post) {
+    private boolean ownMaxChannelPost(Store.Job job, String chat, String mid) {
+        // MAX can omit the sender even for posts published by the bridge.
+        var channel = new Destination("max", chat);
+        boolean pending = forwardsInFlight.containsKey(channel);
+        if (store.origin(channel, mid) != null) {
+            return true;
+        }
+        if (pending && Store.now() - job.received() < 30) {
+            throw new DeliveryQueue.Defer();
+        }
+        return false;
+    }
+
+    private boolean handleMaxChannelReply(Store.Job job, JsonNode message, String post) {
         var sender = message.path("sender");
         String user = value(sender, "user_id");
         String chat = text(message.path("recipient"), "chat_id");
         if (chat.isEmpty() || post.isEmpty() || text(message.path("body"), "mid").isEmpty()
                 || maxBotId.equals(user)) {
-            return;
+            return false;
         }
         var destination = new Destination("max", chat);
         boolean pendingForward = forwardsInFlight.containsKey(destination);
@@ -238,14 +264,16 @@ final class Bridge {
             if (pendingForward && Store.now() - job.received() < 30) {
                 throw new DeliveryQueue.Defer();
             }
-            return;
+            return false;
         }
-        var channel = access.maxChat(chat, "channel");
-        if (channel != null && (user == null || access.isMember("max", chat, user))) {
+        var channel = access.destination("max", chat);
+        if (channel != null && text(channel, "type").equals("channel")
+                && (user == null || access.isMember("max", chat, user))) {
             // MAX omits the sender when a reply is published on behalf of the channel.
             String author = user == null ? first(text(channel, "title"), "Канал") : displayName(sender);
             returnReply(job, message, origin, author, channel);
         }
+        return true;
     }
 
     private boolean handleMaxReply(Store.Job job, String chat, String user, JsonNode message) {
@@ -286,13 +314,18 @@ final class Bridge {
             }
             return false;
         }
-        if (user != null && access.target("telegram", chat, user) != null
-                && access.source(origin.platform(), origin.source()) != null) {
+        if (user != null && access.target("telegram", chat, user) != null) {
             var content = telegramMessage(message);
-            if (content != null) {
+            var source = content == null ? null : access.destination(origin.platform(), origin.source());
+            if (source != null) {
                 String header = safeTitle(displayName(message.path("from"))) + " · Telegram";
+                Store.Origin returned = null;
+                if (text(source, "type").equals("channel")) {
+                    returned = new Store.Origin(new Destination("max", origin.source()), "telegram", chat,
+                            text(message, "message_id"), telegramThread(message));
+                }
                 sendTelegramContentToMax(job, origin.source(), object("type", "reply", "mid", origin.message()),
-                        header, content, "return:telegram", null);
+                        header, content, "return:telegram", returned);
             }
         }
         return true;

@@ -1,14 +1,14 @@
 # Telegram to MAX bridge
 
-Forward new messages from Telegram groups to MAX or from MAX groups to Telegram. Destinations can be groups or channels. Direct replies in destination groups and replies or comments on forwarded posts in MAX channels go back to the original message. Replies in Telegram forum sources stay in the original topic.
+Forward new messages from Telegram groups to MAX or from MAX groups and channels to Telegram. Destinations can be groups or channels. Direct replies in destination groups and replies or comments on forwarded posts in MAX channels go back to the original message. Replies in Telegram forum sources stay in the original topic.
 
-Each member configures their own profiles in a private bot chat. A profile has a direction, one source group, one destination, and its own filter. Linked accounts can manage the same profiles in either bot.
+Each member configures their own profiles in a private bot chat. A profile has a direction, a source, a destination, and its own filter. Linked accounts can manage the same profiles in either bot.
 
 ## Как настроить профиль
 
-1. Добавьте ботов администраторами в группу-источник и в группу или канал назначения. В MAX дайте боту право читать сообщения, а для канала на любой платформе добавьте право публикации.
+1. Добавьте ботов администраторами в источник и чат назначения. В MAX дайте боту право читать сообщения. Для публикации в канале дайте боту право публиковать.
 2. Откройте личный чат с ботом в Telegram или MAX, нажмите «Старт» и выберите **«Новый профиль»**. Выберите направление **Telegram → MAX** или **MAX → Telegram**.
-3. Выберите группу-источник и чат назначения по названию. При первой настройке бот предложит связать аккаунты. Откройте второе приложение по кнопке и вернитесь по кнопке «Продолжить». После этого список профилей доступен в обоих ботах.
+3. Выберите источник и чат назначения по названию. В Telegram источником может быть группа, в MAX — группа или канал. При первой настройке бот предложит связать аккаунты. Откройте второе приложение по кнопке и вернитесь по кнопке «Продолжить». После этого список профилей доступен в обоих ботах.
 4. Выберите фильтр, при желании дайте профилю название и нажмите **«Создать и запустить»**.
 
 | Фильтр | Какие сообщения пересылаются |
@@ -56,7 +56,7 @@ The executable is `target/telegram-max-bridge.jar` within the Java project direc
    ```
 
 5. With the service running, load the same environment in a second shell and run `java -jar target/telegram-max-bridge.jar register-webhooks`. Use dedicated bots for the bridge. Registering replaces the Telegram bot’s webhook and adds a MAX subscription.
-6. Promote the Telegram bot to administrator in the source groups. In MAX, add the bot as administrator with `read_all_messages` in every connected group and grant `write` in each destination channel. Add MAX chats after registering the webhooks so the bridge can discover them. An existing MAX group becomes discoverable when the bot receives a new group message. For an existing channel, change the bot’s admin permissions to generate an update, or use the chat ID directly if you know it. [Telegram group visibility](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get) · [MAX rights](https://dev.max.ru/docs-api/methods/POST/chats/-chatId-/members/admins) · [MAX chat IDs](https://dev.max.ru/docs-api/methods/GET/chats)
+6. Promote the Telegram bot to administrator in the source groups. In MAX, add the bot as administrator with `read_all_messages` in every connected group or channel. Grant `write` to publish in a MAX channel. Add MAX chats after registering the webhooks so the bridge can discover them. An existing MAX group or channel becomes discoverable when the bot receives a new message or post. Changing the bot’s admin permissions also makes the chat discoverable. [Telegram group visibility](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get) · [MAX rights](https://dev.max.ru/docs-api/methods/POST/chats/-chatId-/members/admins) · [MAX chat IDs](https://dev.max.ru/docs-api/methods/GET/chats)
 
 Keep one service process per bot pair. Persist the SQLite database and retain its message-ID mappings across deployments so existing MAX replies can still reach their source. Run the service under your process supervisor in production. The listener binds to localhost by default.
 

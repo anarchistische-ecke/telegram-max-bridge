@@ -279,9 +279,9 @@ final class Menu {
 
         Screen help() {
             return screen("help", Draft.empty(), """
-                    Профиль — это направление пересылки, группа-источник, чат назначения и фильтр.
+                    Профиль — это направление пересылки, источник, чат назначения и фильтр. В MAX источником может быть группа или канал.
 
-                    Добавьте ботов администраторами в выбранные чаты. В каналах дайте им право публиковать сообщения.
+                    Добавьте ботов администраторами в выбранные чаты. В MAX дайте боту право читать сообщения, а в канале назначения — публиковать.
 
                     Нажмите «Новый профиль», выберите направление и нужные чаты. Связать аккаунты Telegram и MAX достаточно один раз.
 
@@ -311,11 +311,12 @@ final class Menu {
                 var info = visible.get(chat);
                 if (info != null) {
                     String label = title(info);
-                    if (!source && text(info, "type").equals("channel")) label = truncate(label, 49) + " · канал";
+                    if (text(info, "type").equals("channel")) label = truncate(label, 49) + " · канал";
                     buttons.add(button(label, (source ? "source:" : "target:") + chat.id()));
                 }
             }
-            String title = source ? "Из какой группы " + app(selectedPlatform) + " пересылать?"
+            String sourceKind = selectedPlatform.equals("max") ? "группы или канала" : "группы";
+            String title = source ? "Из какой " + sourceKind + " " + app(selectedPlatform) + " пересылать?"
                     : "В какую группу или канал " + app(selectedPlatform) + " пересылать?";
             if (buttons.isEmpty()) {
                 title += "\nЗдесь пока нет доступных чатов. Проверьте своё участие и права бота.";
@@ -326,7 +327,7 @@ final class Menu {
             if (ids.size() > CHAT_PAGE_SIZE) buttons.add(button("Следующая страница", action + (page + 1)));
             buttons.add(button("Обновить список", action + page));
             buttons.add(draft.route() > 0 ? back(draft)
-                    : source ? button("Сменить направление", "new") : button("Назад к группам", "sources:0"));
+                    : source ? button("Сменить направление", "new") : button("Назад к источникам", "sources:0"));
             return screen(source ? "sources" : "targets", draft, title, buttons);
         }
 

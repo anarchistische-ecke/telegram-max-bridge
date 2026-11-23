@@ -24,7 +24,7 @@ final class ChatAccess {
 
     JsonNode source(String platform, String chat) {
         if (platform.equals("max")) {
-            return maxChat(chat, "chat");
+            return maxChat(chat, false);
         }
         var bot = available(() -> telegram.member(chat, telegramBotId));
         if (bot == null || !text(bot, "status").equals("administrator")) {
@@ -49,7 +49,7 @@ final class ChatAccess {
     }
 
     JsonNode destination(String platform, String chat) {
-        if (platform.equals("max")) return maxChat(chat, null);
+        if (platform.equals("max")) return maxChat(chat, true);
         var bot = available(() -> telegram.member(chat, telegramBotId));
         if (bot == null || !text(bot, "status").equals("administrator")) return null;
         var info = available(() -> telegram.chat(chat));
@@ -66,13 +66,13 @@ final class ChatAccess {
         return source ? source(platform, chat) : destination(platform, chat);
     }
 
-    JsonNode maxChat(String chat, String expectedKind) {
+    private JsonNode maxChat(String chat, boolean publishing) {
         var info = available(() -> max.chat(chat));
         if (info == null || !text(info, "status").equals("active")) {
             return null;
         }
         String type = text(info, "type");
-        if (!List.of("chat", "channel").contains(type) || expectedKind != null && !expectedKind.equals(type)) {
+        if (!List.of("chat", "channel").contains(type)) {
             return null;
         }
         var bot = available(() -> max.botMember(chat));
@@ -81,7 +81,8 @@ final class ChatAccess {
         }
         var rights = Json.strings(bot.path("permissions"));
         if (!rights.contains("read_all_messages")
-                || type.equals("channel") && !rights.contains("write") && !rights.contains("post_edit_delete_message")) {
+                || publishing && type.equals("channel") && !rights.contains("write")
+                    && !rights.contains("post_edit_delete_message")) {
             return null;
         }
         return info;
