@@ -43,6 +43,13 @@ final class ChatAccess {
         return info != null && isMember("max", chat, maxUser) ? info : null;
     }
 
+    JsonNode visibleChat(String platform, String chat, String user, boolean source) {
+        if (user == null || !isMember(platform, chat, user)) {
+            return null;
+        }
+        return source ? source(platform, chat) : maxChat(chat, null);
+    }
+
     JsonNode maxChat(String chat, String expectedKind) {
         var info = available(() -> max.chat(chat));
         if (info == null || !text(info, "status").equals("active")) {

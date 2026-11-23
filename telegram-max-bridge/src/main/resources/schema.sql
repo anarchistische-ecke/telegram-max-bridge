@@ -16,6 +16,15 @@ CREATE TABLE IF NOT EXISTS link_codes (
 CREATE TABLE IF NOT EXISTS max_chats (
     id TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS telegram_chats (
+    id TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS menus (
+    platform TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    state TEXT NOT NULL,
+    PRIMARY KEY (platform, owner)
+);
 CREATE TABLE IF NOT EXISTS routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,

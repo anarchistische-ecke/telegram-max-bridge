@@ -62,11 +62,33 @@ final class Telegram {
         return call("sendMessage", body).required("message_id");
     }
 
+    JsonNode menu(String chat, String mid, String thread, Menu.Screen screen) {
+        var body = object("chat_id", Long.parseLong(chat), "text", screen.text(),
+                "reply_markup", object("inline_keyboard", screen.buttons("telegram")),
+                "link_preview_options", object("is_disabled", true));
+        if (mid != null) {
+            body.put("message_id", Long.parseLong(mid));
+            return call("editMessageText", body);
+        }
+        if (thread != null) {
+            body.put("message_thread_id", Long.parseLong(thread));
+        }
+        return call("sendMessage", body);
+    }
+
+    JsonNode answer(String id, String notice) {
+        var body = object("callback_query_id", id);
+        if (notice != null) {
+            body.put("text", notice);
+        }
+        return call("answerCallbackQuery", body);
+    }
+
     byte[] download(String fileId) {
         var file = call("getFile", object("file_id", fileId));
         String path = text(file, "file_path");
         if (path.isEmpty() || file.path("file_size").asLong(0) > MEDIA_LIMIT) {
-            throw new MediaFailure("attachment exceeds Telegram’s download limit or is unavailable");
+            throw new MediaFailure("вложение недоступно или превышает лимит Telegram");
         }
         path = Arrays.stream(path.split("/")).map(Transport::encode).collect(Collectors.joining("/"));
         return http.request("Telegram file download", uri(base, "/file/bot" + token + "/" + path, Map.of()),

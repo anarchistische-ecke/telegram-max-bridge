@@ -7,8 +7,10 @@ import static bridge.Json.text;
 import static bridge.Json.value;
 
 record Update(String platform, String key, String lane, JsonNode data) {
+    static final Set<String> TELEGRAM_TYPES = Set.of("message", "callback_query", "my_chat_member");
     static final Set<String> MAX_TYPES = Set.of(
-            "message_created", "bot_started", "bot_added", "bot_removed", "bot_admin_permissions_changed");
+            "message_created", "message_callback", "bot_started", "bot_added", "bot_removed",
+            "bot_admin_permissions_changed");
 
     static Update from(String platform, JsonNode data) {
         if (platform.equals("telegram")) {
@@ -16,12 +18,23 @@ record Update(String platform, String key, String lane, JsonNode data) {
             if (!id.isIntegralNumber()) {
                 return null;
             }
-            var chat = data.path("message").path("chat");
-            return new Update(platform, id.asString(), "telegram:" + chat.path("id").asString("unknown"), data);
+            String chat = Json.first(value(data.path("callback_query").path("from"), "id"),
+                    value(data.path("message").path("chat"), "id"),
+                    value(data.path("my_chat_member").path("chat"), "id"), "unknown");
+            return new Update(platform, id.asString(), "telegram:" + chat, data);
         }
         String type = text(data, "update_type");
         if (!MAX_TYPES.contains(type)) {
             return null;
+        }
+        if (type.equals("message_callback")) {
+            var callback = data.path("callback");
+            String id = text(callback, "callback_id");
+            if (id.isEmpty()) {
+                return null;
+            }
+            return new Update(platform, type + ":" + id,
+                    "max:user:" + value(callback.path("user"), "user_id"), data);
         }
         if (type.equals("message_created")) {
             var message = data.path("message");

@@ -4,6 +4,25 @@ Forward new messages from Telegram or MAX groups to a MAX group or channel. A re
 
 Each member configures their own routes in a private bot chat. A route applies to messages from the whole source group and has one destination and one filter. Members can create routes to multiple destinations. If several profiles match the same message and destination, the bridge posts a single copy there.
 
+## Как настроить пересылку
+
+1. Добавьте бота администратором в группу-источник и в группу или канал MAX, куда нужно пересылать сообщения. В MAX дайте боту права на чтение сообщений, а для канала ещё и на публикацию.
+2. Откройте личный чат с ботом в Telegram или MAX, нажмите «Старт» и выберите **«Настроить пересылку»**. В списке будут чаты, где вы состоите и бот может работать.
+3. Выберите группу-источник и чат MAX по названию. При первой настройке из Telegram бот предложит один раз связать аккаунты. Нажмите **«Открыть MAX»**, затем **«Продолжить в Telegram»**.
+4. Выберите фильтр, проверьте настройки и нажмите **«Запустить пересылку»**.
+
+| Фильтр | Какие сообщения пересылаются |
+| --- | --- |
+| Все сообщения | Все поддерживаемые сообщения, в том числе файлы без подписи |
+| Только с нужными словами | Сообщения, где встречается хотя бы одно из указанных слов или фраз |
+| Все, кроме сообщений со стоп-словами | Сообщения, где отсутствуют все указанные слова и фразы |
+
+Слова и фразы можно ввести через запятую или с новой строки. Бот учитывает текст и подписи к вложениям. Регистр букв значения не имеет.
+
+**Чтобы изменить настройки**, откройте **«Мои пересылки»** и выберите нужную. Там можно поменять источник, чат MAX или фильтр, поставить пересылку на паузу, возобновить или удалить её.
+
+Если группа-источник ещё не появилась в списке, отправьте в ней `/bridge` и нажмите кнопку в ответе бота. Чтобы ответить в исходную группу, используйте «Ответить» на пересланном сообщении в группе MAX.
+
 ## Run the bridge
 
 Build with JDK 25 and Maven 3.9 or newer. The service uses the JDK HTTP server and client, SQLite JDBC for storage, Jackson for JSON, and ICU4J for Unicode keyword matching. Maven packages the dependencies into one runnable JAR.
@@ -38,26 +57,6 @@ Keep one service process per bot pair. Persist the SQLite database and retain it
 ### Upgrade an existing Python deployment
 
 Build the JAR, stop the Python service, and back up the SQLite database. Start the JAR with the existing environment and the same `BRIDGE_DB` file. Use the same working directory if the database path is relative. Java updates the database on first start and resumes pending updates, including deliveries with some destinations already completed. Profiles, linked accounts, routes, and reply mappings are reused. Existing webhook registrations work with the JAR when the public endpoints and secrets stay the same.
-
-## Configure a personal profile
-
-1. In the source group, send `/bridge` and open its link to the private bot chat. In Telegram groups with several bots, you can address it as `/bridge@YOUR_BOT`. If the source link opens an existing bot chat without selecting the group, send `/source GROUP_ID` privately. The group ID is the numeric part of the link after `src_`.
-2. For a Telegram source, send `/link` to the Telegram bot and open the resulting MAX link. You can also copy the `/link CODE` command to the private MAX bot chat. This lets the bridge check which MAX chats you belong to.
-3. In the private bot chat where you selected the source, send `/destinations`. It lists MAX groups and channels you can use, with their IDs. Continue with `/destinations 2` when another page is listed.
-4. Set a route, substituting the chosen MAX chat ID for `MAX_CHAT_ID`.
-
-| Command | Result |
-| --- | --- |
-| `/route MAX_CHAT_ID all` | Send every supported new message, including media without a caption. |
-| `/route MAX_CHAT_ID include urgent, срочно, new order` | Send messages that contain any listed word or phrase. |
-| `/route MAX_CHAT_ID exclude spam, internal only` | Send messages unless they contain any listed word or phrase. |
-| `/routes` | View your active and paused routes. |
-| `/pause ROUTE_ID` and `/resume ROUTE_ID` | Stop or restart new forwards for a route. |
-| `/remove ROUTE_ID` | Delete a route from your profile. |
-
-Keywords are case-insensitive. Commas separate entries, spaces within an entry form a phrase, and whole-word matching means `urgent` matches `urgent!` but misses `urgently`. Filters check message text and media captions. A replacement `/route` command for the same source and destination updates the existing route and activates it. Changing the selected source only changes which source the next `/route` command applies to. Telegram `/unlink` disconnects the MAX account and pauses the member’s Telegram routes.
-
-Before each delivery, the bridge checks that at least one matching profile still belongs to both the source group and the destination and that the bots have the relevant rights. Existing copies in MAX groups can still receive direct replies after the profile owner pauses or deletes a route. Any current member of that MAX destination group can reply.
 
 ## Delivery behavior
 

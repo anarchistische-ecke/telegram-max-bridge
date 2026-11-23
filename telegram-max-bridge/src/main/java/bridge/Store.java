@@ -242,16 +242,16 @@ final class Store implements AutoCloseable {
             String digest = Json.sha256(token);
             String owner = scalar("SELECT telegram FROM link_codes WHERE digest=? AND expires>?", digest, now());
             if (owner == null) {
-                return "This account link has expired or was already used. Run /link in Telegram again.";
+                return "Ссылка истекла или уже использована. Откройте «Аккаунт MAX» в меню бота Telegram и получите новую ссылку.";
             }
             List<Pair> pairs = query("SELECT * FROM account_links WHERE telegram=? OR max_user=?",
                     row -> new Pair(row.getString(1), row.getString(2)), owner, maxUser);
             if (pairs.stream().anyMatch(pair -> !pair.telegram().equals(owner) || !pair.maxUser().equals(maxUser))) {
-                return "One of these accounts is already linked. Unlink it in the Telegram bot first.";
+                return "Один из аккаунтов уже подключён. Отключите его через «Аккаунт MAX» в Telegram.";
             }
             execute("INSERT OR IGNORE INTO account_links VALUES (?, ?)", owner, maxUser);
             execute("DELETE FROM link_codes WHERE digest=?", digest);
-            String result = "Accounts linked. Return to the Telegram bot and run /destinations.";
+            String result = Menu.LINKED;
             execute("INSERT INTO steps VALUES (?, 'linked', ?)", seq, Json.MAPPER.writeValueAsString(result));
             return result;
         });
@@ -277,6 +277,59 @@ final class Store implements AutoCloseable {
     List<String> maxChats(int page, int size) {
         return locked(() -> query("SELECT id FROM max_chats ORDER BY id LIMIT ? OFFSET ?",
                 row -> row.getString(1), size + 1, page * size));
+    }
+
+    void rememberTelegramChat(String chat) {
+        locked(() -> execute("INSERT OR IGNORE INTO telegram_chats VALUES (?)", chat));
+    }
+
+    void forgetTelegramChat(String chat) {
+        locked(() -> execute("DELETE FROM telegram_chats WHERE id=?", chat));
+    }
+
+    List<String> telegramSources(String owner, int page, int size) {
+        return locked(() -> query("""
+                SELECT id FROM telegram_chats
+                UNION SELECT source FROM profiles WHERE platform='telegram' AND owner=?
+                UNION SELECT source FROM routes WHERE platform='telegram' AND owner=?
+                ORDER BY 1 LIMIT ? OFFSET ?
+                """, row -> row.getString(1), owner, owner, size + 1, page * size));
+    }
+
+    Menu.State menu(String platform, String owner) {
+        String state = locked(() -> scalar("SELECT state FROM menus WHERE platform=? AND owner=?", platform, owner));
+        return state == null ? null : Json.MAPPER.readValue(state, Menu.State.class);
+    }
+
+    void saveMenu(Job job, String owner, Menu.State state, Menu.Screen screen) {
+        transaction(() -> {
+            execute("""
+                    INSERT INTO menus VALUES (?, ?, ?) ON CONFLICT(platform, owner)
+                    DO UPDATE SET state=excluded.state
+                    """, job.platform(), owner, Json.MAPPER.writeValueAsString(state));
+            execute("INSERT INTO steps VALUES (?, 'menu-screen', ?)", job.seq(), Json.MAPPER.writeValueAsString(screen));
+            return null;
+        });
+    }
+
+    Route routeFor(String platform, String owner, String source, String target) {
+        return locked(() -> query("SELECT * FROM routes WHERE platform=? AND owner=? AND source=? AND target=?",
+                Store::routeRow, platform, owner, source, target).stream().findFirst().orElse(null));
+    }
+
+    void editRoute(Route existing, String source, String target, String mode, List<String> terms, long seq) {
+        transaction(() -> {
+            if (scalar("SELECT result FROM steps WHERE seq=? AND action='menu-edit'", seq) == null) {
+                boolean sameChats = existing.source().equals(source) && existing.target().equals(target);
+                execute("""
+                        UPDATE routes SET source=?, target=?, mode=?, terms=?, enabled_since=?
+                        WHERE id=? AND platform=? AND owner=?
+                        """, source, target, mode, Json.MAPPER.writeValueAsString(terms),
+                        sameChats ? existing.enabledSince() : now(), existing.id(), existing.platform(), existing.owner());
+                execute("INSERT INTO steps VALUES (?, 'menu-edit', 'true')", seq);
+            }
+            return null;
+        });
     }
 
     long setRoute(String platform, String owner, String source, String target, String mode, List<String> terms,

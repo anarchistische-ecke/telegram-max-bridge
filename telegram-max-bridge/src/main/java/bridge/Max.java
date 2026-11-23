@@ -66,6 +66,27 @@ final class Max {
                 .required("message").required("body").required("mid");
     }
 
+    JsonNode menu(String chat, String user, String mid, Menu.Screen screen) {
+        var body = object("text", screen.text(), "attachments", List.of(
+                object("type", "inline_keyboard", "payload", object("buttons", screen.buttons("max")))));
+        if (mid != null) {
+            return call("/messages", "PUT", body, Map.of("message_id", mid, "disable_link_preview", "true"));
+        }
+        var query = new java.util.HashMap<String, String>();
+        query.put(chat == null ? "user_id" : "chat_id", chat == null ? user : chat);
+        query.put("disable_link_preview", "true");
+        return call("/messages", "POST", body, query);
+    }
+
+    JsonNode answer(String id, String notice) {
+        return call("/answers", "POST", object("notification", notice == null ? "" : notice),
+                Map.of("callback_id", id));
+    }
+
+    void commands(List<JsonNode> commands) {
+        call("/me/commands", "PATCH", object("commands", commands), Map.of());
+    }
+
     JsonNode upload(String kind, String filename, byte[] bytes) {
         var ticket = call("/uploads", "POST", null, Map.of("type", kind));
         byte[] raw = http.request("MAX media upload", mediaUri(ticket.required("url").asString()),
@@ -84,7 +105,7 @@ final class Max {
         if (!mediaToken.isEmpty() && (!response.isEmpty() || rawText.equals("<retval>1</retval>") || rawText.isEmpty())) {
             return object("type", kind, "payload", object("token", mediaToken));
         }
-        throw new MediaFailure("MAX rejected the uploaded attachment");
+        throw new MediaFailure("MAX не принял вложение");
     }
 
     byte[] download(JsonNode attachment) {
@@ -100,7 +121,7 @@ final class Max {
             }
         }
         if (url.isEmpty()) {
-            throw new MediaFailure("no downloadable attachment");
+            throw new MediaFailure("вложение недоступно для скачивания");
         }
         return http.request("MAX media download", mediaUri(url), "GET", null, null, null, true, true);
     }

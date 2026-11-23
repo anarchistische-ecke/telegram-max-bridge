@@ -96,11 +96,19 @@ public final class Main {
         }
         String base = origin.endsWith("/") ? origin.substring(0, origin.length() - 1) : origin;
         if (!telegram.call("setWebhook", object("url", base + "/webhook/telegram", "secret_token", secrets.telegram(),
-                "allowed_updates", Set.of("message"), "max_connections", 1)).asBoolean(false)) {
+                "allowed_updates", Update.TELEGRAM_TYPES, "max_connections", 1)).asBoolean(false)) {
             throw new IllegalArgumentException("Telegram did not confirm its webhook.");
         }
         max.post("/subscriptions", object("url", base + "/webhook/max", "secret", secrets.max(),
                 "update_types", Update.MAX_TYPES));
+        var start = object("command", "start", "description", "Открыть главное меню");
+        var group = object("command", "bridge", "description", "Настроить пересылку из этой группы");
+        telegram.call("setMyCommands", object("commands", java.util.List.of(start),
+                "scope", object("type", "all_private_chats")));
+        telegram.call("setMyCommands", object("commands", java.util.List.of(group),
+                "scope", object("type", "all_group_chats")));
+        max.commands(java.util.List.of(object("name", "start", "description", "Открыть меню пересылки"),
+                object("name", "bridge", "description", "Настроить пересылку из этой группы")));
     }
 
     private static void serve(Path db, InetSocketAddress address, Secrets secrets, Telegram telegram, Max max,

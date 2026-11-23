@@ -124,12 +124,12 @@ final class Transport implements AutoCloseable {
             }
         } catch (ResponseTooLarge error) {
             if (download) {
-                throw new MediaFailure("attachment exceeds 20 MB");
+                throw new MediaFailure("вложение больше 20 МБ");
             }
             throw new ApiFailure(operation, 0, "", 0);
         } catch (IOException error) {
             if (download && error.getCause() instanceof ResponseTooLarge) {
-                throw new MediaFailure("attachment exceeds 20 MB");
+                throw new MediaFailure("вложение больше 20 МБ");
             }
             throw new ApiFailure(operation, 0, "", 0);
         } catch (InterruptedException error) {
@@ -162,7 +162,7 @@ final class Transport implements AutoCloseable {
         try {
             return URI.create(raw);
         } catch (IllegalArgumentException error) {
-            throw new MediaFailure("invalid MAX media URL");
+            throw new MediaFailure("некорректная ссылка на вложение MAX");
         }
     }
 
@@ -171,7 +171,7 @@ final class Transport implements AutoCloseable {
         if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getUserInfo() != null
                 || (uri.getPort() != -1 && uri.getPort() != 443)
                 || MAX_CDN.stream().noneMatch(domain -> host.equals(domain) || host.endsWith("." + domain))) {
-            throw new MediaFailure("unrecognized MAX media host");
+            throw new MediaFailure("неизвестный сервер вложений MAX");
         }
     }
 

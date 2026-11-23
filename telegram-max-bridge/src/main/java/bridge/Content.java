@@ -45,18 +45,18 @@ final class Content {
 
     static List<String> parseFilter(String mode, String raw) {
         if (!MODES.contains(mode)) {
-            throw new IllegalArgumentException("Choose all, include, or exclude.");
+            throw new IllegalArgumentException("Выберите режим пересылки в меню.");
         }
         if (mode.equals("all")) {
             if (!normalize(raw).isEmpty()) {
-                throw new IllegalArgumentException("The all mode takes no words.");
+                throw new IllegalArgumentException("В режиме «Все сообщения» слова указывать не нужно.");
             }
             return List.of();
         }
         List<String> terms = Arrays.stream(raw.split(",")).map(Content::normalize)
                 .filter(term -> !term.isEmpty()).distinct().toList();
         if (terms.isEmpty() || terms.size() > 30 || terms.stream().anyMatch(term -> size(term) > 100)) {
-            throw new IllegalArgumentException("Enter 1–30 comma-separated words or phrases, up to 100 characters each.");
+            throw new IllegalArgumentException("Введите от 1 до 30 слов или фраз через запятую. До 100 символов в каждом.");
         }
         return terms;
     }
@@ -91,7 +91,7 @@ final class Content {
 
     static String displayName(JsonNode user) {
         return first(join(" ", text(user, "first_name"), text(user, "last_name")),
-                value(user, "title"), value(user, "name"), "Unknown sender");
+                value(user, "title"), value(user, "name"), "Неизвестный отправитель");
     }
 
     static String safeTitle(String value) {
@@ -172,7 +172,7 @@ final class Content {
                 point = venue.path("location");
             }
             String note = join("\n", text(venue, "title"), text(venue, "address"));
-            return new TelegramMessage(first(note, "Location"), note, null,
+            return new TelegramMessage(first(note, "Местоположение"), note, null,
                     object("type", "location", "latitude", point.path("latitude"), "longitude", point.path("longitude")));
         }
         var poll = message.path("poll");
