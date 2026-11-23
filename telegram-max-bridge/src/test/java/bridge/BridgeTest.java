@@ -70,12 +70,19 @@ class BridgeTest {
         rig.route(TG_OWNER, MAX_OWNER, TG_GROUP, MAX_GROUP, "include доставка, new order");
         rig.route(TG_OTHER, MAX_OTHER, TG_GROUP, MAX_GROUP, "exclude spam");
         var source = rig.telegramEvent("ДОСТАВКА!", TG_OWNER, TG_GROUP, 88);
-        ((ObjectNode) source.path("message")).put("is_topic_message", true).put("message_thread_id", 17);
+        var message = (ObjectNode) source.path("message");
+        message.put("is_topic_message", true).put("message_thread_id", 17)
+                .put("date", java.time.Instant.parse("2026-11-23T10:07:45Z").getEpochSecond());
+        ((ObjectNode) message.path("from")).put("first_name", "Анна").put("last_name", "Петрова")
+                .put("username", "anna_petrova");
+        message.set("forward_origin", object("type", "hidden_user", "date", 1700000000,
+                "sender_user_name", "Другой отправитель"));
         rig.send("telegram", source);
         rig.send("telegram", source);
         var forwarded = rig.platforms.to(MAX_GROUP);
         assertEquals(1, forwarded.size());
-        assertTrue(text(forwarded.getFirst().body(), "text").contains("ДОСТАВКА!"));
+        assertEquals("Анна Петрова (@anna_petrova, 23.11.2026 13:07:45 МСК) · Telegram / Dispatch\n\nДОСТАВКА!",
+                text(forwarded.getFirst().body(), "text"));
         String mid = forwarded.getFirst().mid();
 
         rig.reopen();
@@ -144,8 +151,16 @@ class BridgeTest {
         rig.telegram("allowed", TG_OWNER, TG_GROUP, 8);
         assertTrue(rig.platforms.to(MAX_CHANNEL).isEmpty());
         rig.platforms.protectedSource = false;
-        rig.telegram("allowed", TG_OWNER, TG_GROUP, 9);
-        assertEquals(1, rig.platforms.to(MAX_CHANNEL).size());
+        var anonymousPost = rig.telegramEvent("allowed", TG_OWNER, TG_GROUP, 9);
+        var message = (ObjectNode) anonymousPost.path("message");
+        message.put("date", java.time.Instant.parse("2026-11-23T21:04:08Z").getEpochSecond());
+        message.set("sender_chat", object("id", TG_GROUP, "type", "supergroup", "title", "Диспетчерская"));
+        ((ObjectNode) message.path("from")).put("username", "GroupAnonymousBot").put("is_bot", true);
+        rig.send("telegram", anonymousPost);
+        var forwarded = rig.platforms.to(MAX_CHANNEL);
+        assertEquals(1, forwarded.size());
+        assertTrue(text(forwarded.getFirst().body(), "text").startsWith(
+                "Диспетчерская (ник не указан, 24.11.2026 00:04:08 МСК) · Telegram"));
     }
 
     @Test

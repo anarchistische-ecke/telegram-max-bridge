@@ -118,8 +118,8 @@ final class Bridge {
         if (routes.isEmpty() || access.source("telegram", id) == null) {
             return;
         }
-        String senderName = safeTitle(displayName(anonymous.isEmpty() ? sender : anonymous));
-        String header = senderName + " · Telegram / " + safeTitle(first(text(chat, "title"), id));
+        var author = anonymous.isEmpty() ? sender : anonymous;
+        String header = telegramAttribution(message, author) + " · Telegram / " + safeTitle(first(text(chat, "title"), id));
         String mid = text(message, "message_id");
         String thread = telegramThread(message);
         deliverRoutes(job.platform(), id, routes, target -> sendTelegramContentToMax(job, target.id(), null, header, content, "forward:" + target.id(),

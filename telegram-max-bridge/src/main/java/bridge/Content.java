@@ -2,10 +2,14 @@ package bridge;
 
 import com.ibm.icu.lang.UCharacter;
 import com.ibm.icu.text.Normalizer2;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -21,6 +25,8 @@ final class Content {
     private record Link(int end, String url) {}
 
     private static final Pattern WHITESPACE = Pattern.compile("[\\s\\x1c-\\x1f]+", Pattern.UNICODE_CHARACTER_CLASS);
+    private static final DateTimeFormatter MOSCOW_TIME = DateTimeFormatter
+            .ofPattern("dd.MM.uuuu HH:mm:ss 'МСК'", Locale.ROOT).withZone(ZoneId.of("Europe/Moscow"));
     private static final Set<String> MODES = Set.of("all", "include", "exclude");
     private static final List<MediaType> TELEGRAM_MEDIA = List.of(
             new MediaType("video", "video", "video.mp4"),
@@ -92,6 +98,14 @@ final class Content {
     static String displayName(JsonNode user) {
         return first(join(" ", text(user, "first_name"), text(user, "last_name")),
                 value(user, "title"), value(user, "name"), "Неизвестный отправитель");
+    }
+
+    static String telegramAttribution(JsonNode message, JsonNode author) {
+        String username = safeTitle(text(author, "username"));
+        String nickname = username.isEmpty() ? "ник не указан" : "@" + username;
+        long seconds = message.path("date").asLong(0);
+        String published = seconds > 0 ? MOSCOW_TIME.format(Instant.ofEpochSecond(seconds)) : "время не указано";
+        return safeTitle(displayName(author)) + " (" + nickname + ", " + published + ")";
     }
 
     static String safeTitle(String value) {
