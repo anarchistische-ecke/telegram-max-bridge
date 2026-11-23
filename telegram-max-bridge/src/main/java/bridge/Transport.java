@@ -81,6 +81,12 @@ final class Transport implements AutoCloseable {
 
     byte[] request(String operation, URI uri, String method, JsonNode payload, String token, Upload upload,
                    boolean download, boolean maxCdn) {
+        return request(operation, uri, method, payload, token, upload, download, maxCdn,
+                Duration.ofSeconds(upload != null || download ? 30 : 12));
+    }
+
+    byte[] request(String operation, URI uri, String method, JsonNode payload, String token, Upload upload,
+                   boolean download, boolean maxCdn, Duration timeout) {
         if (maxCdn) {
             validateMaxCdn(uri);
         }
@@ -91,7 +97,7 @@ final class Transport implements AutoCloseable {
                     pacer.acquire();
                 }
                 var builder = HttpRequest.newBuilder(uri)
-                        .timeout(Duration.ofSeconds(upload != null || download ? 30 : 12))
+                        .timeout(timeout)
                         .method(method, body.publisher())
                         .header("Accept", "application/json, */*");
                 if (body.type() != null) {

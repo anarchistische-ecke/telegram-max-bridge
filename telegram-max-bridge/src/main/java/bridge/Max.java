@@ -67,8 +67,7 @@ final class Max {
     }
 
     JsonNode menu(String chat, String user, String mid, Menu.Screen screen) {
-        var body = object("text", screen.text(), "attachments", List.of(
-                object("type", "inline_keyboard", "payload", object("buttons", screen.buttons("max")))));
+        var body = menuBody(screen);
         if (mid != null) {
             return call("/messages", "PUT", body, Map.of("message_id", mid, "disable_link_preview", "true"));
         }
@@ -78,9 +77,14 @@ final class Max {
         return call("/messages", "POST", body, query);
     }
 
-    JsonNode answer(String id, String notice) {
-        return call("/answers", "POST", object("notification", notice == null ? "" : notice),
-                Map.of("callback_id", id));
+    JsonNode answer(String id, String notice, Menu.Screen screen) {
+        var body = screen == null ? object("notification", notice) : object("message", menuBody(screen));
+        return call("/answers", "POST", body, Map.of("callback_id", id, "disable_link_preview", "true"));
+    }
+
+    private static JsonNode menuBody(Menu.Screen screen) {
+        return object("text", screen.text(), "attachments", List.of(
+                object("type", "inline_keyboard", "payload", object("buttons", screen.buttons("max")))));
     }
 
     void commands(List<JsonNode> commands) {

@@ -29,6 +29,7 @@ final class Bridge {
     private final String telegramBotId;
     private final String maxBotId;
     private final Semaphore media;
+    private final Semaphore telegramCallbackAnswers = new Semaphore(16);
     private final Map<Destination, Integer> forwardsInFlight = new ConcurrentHashMap<>();
 
     Bridge(Store store, Telegram telegram, Max max, JsonNode telegramBot, JsonNode maxBot, int concurrentMedia) {
@@ -320,20 +321,48 @@ final class Bridge {
             return;
         }
         boolean current = menu.current(job, user, payload);
-        once(job, "menu-acknowledged", () -> {
+        if (job.platform().equals("telegram")) {
+            if (job.attempts() == 0) {
+                answerTelegramCallback(id, current ? null : menu.staleNotice());
+            }
+            if (current) {
+                showMenu(job, user, mid, menu.callback(job, user, payload));
+            }
+            return;
+        }
+
+        var screen = current ? menu.callback(job, user, payload) : null;
+        if (screen == null) {
             try {
-                String notice = current ? null : menu.staleNotice();
-                return job.platform().equals("telegram") ? telegram.answer(id, notice) : max.answer(id, notice);
+                max.answer(id, menu.staleNotice(), null);
             } catch (ApiFailure error) {
-                if (error.unavailable()) {
-                    return object();
-                }
-                throw error;
+                if (!error.unavailable()) throw error;
+            }
+            return;
+        }
+        if (mid != null && store.step(job.seq(), "menu-acknowledged") == null) {
+            try {
+                once(job, "menu-delivered", () -> max.answer(id, null, screen));
+                return;
+            } catch (ApiFailure error) {
+                if (!error.unavailable()) throw error;
+            }
+        }
+        showMenu(job, user, mid, screen);
+    }
+
+    private void answerTelegramCallback(String id, String notice) {
+        if (!telegramCallbackAnswers.tryAcquire()) return;
+        // A stalled acknowledgment must never hold up the menu or the next tap in this chat.
+        Thread.startVirtualThread(() -> {
+            try {
+                telegram.answer(id, notice);
+            } catch (ApiFailure error) {
+                LOG.fine(() -> "Could not acknowledge Telegram menu callback (" + error.getMessage() + ")");
+            } finally {
+                telegramCallbackAnswers.release();
             }
         });
-        if (current) {
-            showMenu(job, user, mid, menu.callback(job, user, payload));
-        }
     }
 
     private void showMenu(Store.Job job, String user, String mid, Menu.Screen screen) {

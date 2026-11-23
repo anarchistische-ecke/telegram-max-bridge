@@ -447,6 +447,57 @@ class BridgeTest {
     }
 
     @Test
+    void telegramMenuAndNextTapProceedWhileCallbackAnswerIsStalled() throws Exception {
+        rig = new Rig(temp);
+        rig.telegram("/start", TG_OWNER, TG_OWNER, 1);
+        rig.platforms.blockedTelegramCallback = "click." + (rig.updateId.get() + 1);
+        try {
+            rig.telegramClick(TG_OWNER, rig.telegramButton("Новый профиль"));
+            assertTrue(rig.platforms.telegramCallbackEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(rig.lastTelegram().contains("Выберите направление"));
+            rig.telegramClick(TG_OWNER, rig.telegramButton("Главное меню"));
+            assertTrue(rig.lastTelegram().contains("Создайте первый профиль"));
+            assertEquals(0, rig.pending());
+        } finally {
+            rig.platforms.telegramCallbackRelease.countDown();
+        }
+    }
+
+    @Test
+    void maxMenuUpdatesInOneAnswerAndFallsBackWhenCallbackExpires() throws Exception {
+        rig = new Rig(temp);
+        rig.send("max", object("update_type", "bot_started", "user", object("user_id", MAX_OWNER)));
+        String mid = rig.platforms.to(MAX_OWNER).getLast().mid();
+        rig.maxClick(rig.maxButton("Новый профиль"));
+        assertTrue(text(rig.platforms.maxAnswers.getLast().path("message"), "text").contains("Выберите направление"));
+        assertEquals(0, rig.platforms.maxMenuEdits.get());
+        assertEquals(mid, rig.platforms.to(MAX_OWNER).getLast().mid());
+
+        rig.platforms.expireNextMaxCallback = true;
+        rig.maxClick(rig.maxButton("Главное меню"));
+        assertEquals(1, rig.platforms.maxMenuEdits.get());
+        assertEquals(mid, rig.platforms.to(MAX_OWNER).getLast().mid());
+        assertTrue(text(rig.platforms.to(MAX_OWNER).getLast().body(), "text").contains("Создайте первый профиль"));
+    }
+
+    @Test
+    void chatChoicesCheckMembershipInParallelAndExcludeInaccessibleChats() throws Exception {
+        rig = new Rig(temp);
+        rig.link(TG_OWNER, MAX_OWNER);
+        rig.send("max", object("update_type", "bot_added", "chat_id", MAX_GROUP));
+        rig.send("max", object("update_type", "bot_added", "chat_id", MAX_SOURCE));
+        rig.platforms.maxMembers.get(MAX_GROUP).remove(MAX_OWNER);
+        rig.send("max", object("update_type", "bot_started", "user", object("user_id", MAX_OWNER)));
+        rig.maxClick(rig.maxButton("Новый профиль"));
+        rig.platforms.membershipRequestsTogether = new CountDownLatch(2);
+        rig.maxClick(rig.maxButton("MAX → Telegram"));
+        assertEquals(0, rig.platforms.membershipRequestsTogether.getCount());
+        var buttons = maxButtons(rig.platforms.to(MAX_OWNER).getLast().body());
+        assertFalse(buttons.toString().contains("Room " + MAX_GROUP));
+        assertTrue(buttons.toString().contains("Room " + MAX_SOURCE));
+    }
+
+    @Test
     void russianTelegramWizardLinksMaxAndReusesSavedDraftAcrossRestart() throws Exception {
         rig = new Rig(temp);
         rig.send("telegram", object("update_id", rig.updateId.incrementAndGet(), "my_chat_member",
@@ -458,6 +509,7 @@ class BridgeTest {
 
         String initial = rig.telegramButton("Новый профиль");
         rig.telegramClick(TG_OWNER, initial.replace(":new", ":save"));
+        await(() -> !rig.platforms.telegramAnswers.isEmpty());
         assertTrue(text(rig.platforms.telegramAnswers.getLast(), "text").contains("устарело"));
         assertTrue(rig.platforms.telegramSends.stream().anyMatch(value ->
                 value.path("reply_markup").path("is_persistent").asBoolean(false)));
@@ -796,10 +848,12 @@ class BridgeTest {
 
         void maxClick(String data) throws Exception {
             long id = updateId.incrementAndGet();
+            String mid = platforms.to(MAX_OWNER).getLast().mid();
+            platforms.maxCallbackMessages.put("click." + id, mid);
             send("max", object("update_type", "message_callback",
                     "callback", object("callback_id", "click." + id, "payload", data, "user", object("user_id", MAX_OWNER)),
                     "message", object("recipient", object("chat_type", "dialog"), "body",
-                            object("mid", platforms.to(MAX_OWNER).getLast().mid()))));
+                            object("mid", mid))));
         }
 
         void max(String text, long user, long chat, String kind, String reply) throws Exception {
@@ -870,12 +924,16 @@ class BridgeTest {
         final List<JsonNode> telegramAnswers = new CopyOnWriteArrayList<>();
         final List<JsonNode> maxAnswers = new CopyOnWriteArrayList<>();
         final List<Sent> maxSends = new CopyOnWriteArrayList<>();
+        final Map<String, String> maxCallbackMessages = new ConcurrentHashMap<>();
         final Set<Long> telegramMembers = ConcurrentHashMap.newKeySet();
         final Map<Long, Set<Long>> maxMembers = new ConcurrentHashMap<>();
         final Set<Long> failOnce = ConcurrentHashMap.newKeySet();
         final CountDownLatch blockEntered = new CountDownLatch(1);
         final CountDownLatch blockRelease = new CountDownLatch(1);
+        final CountDownLatch telegramCallbackEntered = new CountDownLatch(1);
+        final CountDownLatch telegramCallbackRelease = new CountDownLatch(1);
         final AtomicInteger failedPosts = new AtomicInteger();
+        final AtomicInteger maxMenuEdits = new AtomicInteger();
         private final AtomicLong nextMid = new AtomicLong();
         volatile JsonNode telegramRegistration;
         volatile JsonNode maxRegistration;
@@ -885,6 +943,9 @@ class BridgeTest {
         volatile boolean telegramChannelWrite;
         volatile int telegramMessageId;
         volatile String blockOn;
+        volatile String blockedTelegramCallback;
+        volatile boolean expireNextMaxCallback;
+        volatile CountDownLatch membershipRequestsTogether;
 
         Platforms() throws IOException {
             telegramMembers.addAll(List.of(TG_OWNER, TG_OTHER));
@@ -929,6 +990,13 @@ class BridgeTest {
                 }
                 JsonNode body = raw.length == 0 ? object() : Json.MAPPER.readTree(raw);
                 if (path.startsWith("/bottelegram-token/")) {
+                    if (path.endsWith("/answerCallbackQuery")
+                            && text(body, "callback_query_id").equals(blockedTelegramCallback)) {
+                        telegramCallbackEntered.countDown();
+                        waitFor(telegramCallbackRelease);
+                        reply(exchange, 503, object("ok", false));
+                        return;
+                    }
                     var result = telegram(path.substring(path.lastIndexOf('/') + 1), body);
                     reply(exchange, 200, object("ok", true, "result", result));
                 } else if ("max-token".equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
@@ -972,13 +1040,28 @@ class BridgeTest {
         }
 
         private void max(HttpExchange exchange, String path, JsonNode body) throws IOException {
-            if (path.equals("/answers") || path.equals("/me/commands")) {
-                if (path.equals("/answers")) maxAnswers.add(body);
+            if (path.equals("/answers")) {
+                maxAnswers.add(body);
+                if (expireNextMaxCallback) {
+                    expireNextMaxCallback = false;
+                    reply(exchange, 404, object("code", "callback.not.found"));
+                    return;
+                }
+                if (body.has("message")) {
+                    String mid = maxCallbackMessages.get(query(exchange, "callback_id"));
+                    var previous = maxSends.stream().filter(sent -> sent.mid().equals(mid)).findFirst().orElseThrow();
+                    maxSends.add(new Sent(previous.target(), body.path("message"), mid));
+                }
+                reply(exchange, 200, object("success", true));
+                return;
+            }
+            if (path.equals("/me/commands")) {
                 reply(exchange, 200, object("success", true));
                 return;
             }
             if (path.equals("/messages")) {
                 if (exchange.getRequestMethod().equals("PUT")) {
+                    maxMenuEdits.incrementAndGet();
                     String mid = query(exchange, "message_id");
                     var previous = maxSends.stream().filter(sent -> sent.mid().equals(mid)).findFirst().orElseThrow();
                     maxSends.add(new Sent(previous.target(), body, mid));
@@ -1020,6 +1103,11 @@ class BridgeTest {
                         : List.of("read_all_messages", "write");
                 reply(exchange, 200, object("is_admin", true, "permissions", permissions));
             } else if (path.endsWith("/members")) {
+                var together = membershipRequestsTogether;
+                if (together != null) {
+                    together.countDown();
+                    waitFor(together);
+                }
                 List<JsonNode> members = new ArrayList<>();
                 for (String user : query(exchange, "user_ids").split(",")) {
                     if (maxMembers.get(chat).contains(Long.parseLong(user))) {
@@ -1030,6 +1118,15 @@ class BridgeTest {
             } else {
                 reply(exchange, 200, object("chat_id", chat, "type", chat == MAX_CHANNEL ? "channel" : "chat",
                         "status", "active", "title", "Room " + chat));
+            }
+        }
+
+        private static void waitFor(CountDownLatch latch) throws IOException {
+            try {
+                if (!latch.await(6, TimeUnit.SECONDS)) throw new IOException("Timed out waiting for the test request");
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IOException(error);
             }
         }
 

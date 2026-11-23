@@ -1,8 +1,14 @@
 package bridge;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import tools.jackson.databind.JsonNode;
 
 import static bridge.Content.safeTitle;
@@ -11,6 +17,7 @@ import static bridge.Json.*;
 
 final class Menu {
     record Button(String label, String action, String url) {}
+    private record ChatChoice(String platform, String id, boolean source) {}
     record Screen(String text, String revision, List<List<Button>> rows) {
         JsonNode buttons(String platform) {
             var keyboard = MAPPER.createArrayNode();
@@ -82,6 +89,7 @@ final class Menu {
     private final Store store;
     private final ChatAccess access;
     private final Commands commands;
+    private final Semaphore chatLookups = new Semaphore(8, true);
 
     Menu(Store store, ChatAccess access, Commands commands) {
         this.store = store;
@@ -137,6 +145,33 @@ final class Menu {
     }
 
     String staleNotice() { return STALE; }
+
+    private Map<ChatChoice, JsonNode> visibleChats(Store.Identity identity, List<ChatChoice> requested) {
+        if (requested.isEmpty()) return Map.of();
+        var choices = requested.stream().distinct().toList();
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var checks = choices.stream().<Callable<JsonNode>>map(chat -> () -> {
+                chatLookups.acquire();
+                try {
+                    return access.visibleChat(chat.platform(), chat.id(), identity.on(chat.platform()), chat.source());
+                } finally {
+                    chatLookups.release();
+                }
+            }).toList();
+            var results = workers.invokeAll(checks);
+            var visible = new HashMap<ChatChoice, JsonNode>();
+            for (int i = 0; i < choices.size(); i++) {
+                visible.put(choices.get(i), results.get(i).get());
+            }
+            return visible;
+        } catch (ExecutionException error) {
+            if (error.getCause() instanceof RuntimeException cause) throw cause;
+            throw new IllegalStateException("Chat lookup failed", error.getCause());
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Chat lookup interrupted", error);
+        }
+    }
 
     Screen callback(Store.Job job, String owner, String payload) {
         var session = new Session(job, owner);
@@ -264,17 +299,20 @@ final class Menu {
 
         Screen choices(Draft draft, boolean source, int page) {
             String selectedPlatform = source ? draft.from() : draft.to();
-            String member = store.identity(platform, owner).on(selectedPlatform);
+            var identity = store.identity(platform, owner);
+            String member = identity.on(selectedPlatform);
             if (member == null) return linkAccounts(draft, source ? "sources" : "targets");
             List<String> ids = selectedPlatform.equals("telegram")
                     ? store.telegramSources(member, page, CHAT_PAGE_SIZE) : store.maxChats(page, CHAT_PAGE_SIZE);
+            var choices = ids.stream().limit(CHAT_PAGE_SIZE).map(id -> new ChatChoice(selectedPlatform, id, source)).toList();
+            var visible = visibleChats(identity, choices);
             var buttons = new ArrayList<Button>();
-            for (String id : ids.subList(0, Math.min(CHAT_PAGE_SIZE, ids.size()))) {
-                var info = access.visibleChat(selectedPlatform, id, member, source);
+            for (var chat : choices) {
+                var info = visible.get(chat);
                 if (info != null) {
                     String label = title(info);
                     if (!source && text(info, "type").equals("channel")) label = truncate(label, 49) + " · канал";
-                    buttons.add(button(label, (source ? "source:" : "target:") + id));
+                    buttons.add(button(label, (source ? "source:" : "target:") + chat.id()));
                 }
             }
             String title = source ? "Из какой группы " + app(selectedPlatform) + " пересылать?"
@@ -368,12 +406,23 @@ final class Menu {
 
         Screen profiles(int page, String notice) {
             var profiles = store.userProfiles(platform, owner, page, PROFILE_PAGE_SIZE);
+            var pageProfiles = profiles.subList(0, Math.min(profiles.size(), PROFILE_PAGE_SIZE));
+            var choices = new ArrayList<ChatChoice>();
+            for (var profile : pageProfiles) {
+                if (profile.name().isBlank()) {
+                    choices.add(new ChatChoice(profile.platform(), profile.source(), true));
+                    choices.add(new ChatChoice(profile.targetPlatform(), profile.target(), false));
+                }
+            }
+            var visible = visibleChats(store.identity(platform, owner), choices);
             var buttons = new ArrayList<Button>();
-            for (var profile : profiles.subList(0, Math.min(profiles.size(), PROFILE_PAGE_SIZE))) {
-                String label = profile.name().isBlank()
-                        ? truncate(chatLabel(profile.platform(), profile.source(), true), 21) + " → "
-                            + truncate(chatLabel(profile.targetPlatform(), profile.target(), false), 21)
-                        : profile.label();
+            for (var profile : pageProfiles) {
+                String label = profile.label();
+                if (profile.name().isBlank()) {
+                    var source = visible.get(new ChatChoice(profile.platform(), profile.source(), true));
+                    var target = visible.get(new ChatChoice(profile.targetPlatform(), profile.target(), false));
+                    label = truncate(chatLabel(source), 21) + " → " + truncate(chatLabel(target), 21);
+                }
                 buttons.add(button((profile.active() ? "" : "⏸ ") + label, "profile:" + profile.id()));
             }
             if (page > 0) buttons.add(button("Предыдущая страница", "profiles:" + (page - 1)));
@@ -444,15 +493,16 @@ final class Menu {
         String summary(Draft draft) {
             String name = draft.name().isBlank() ? "" : "Название: " + draft.name() + "\n";
             String words = draft.words().isEmpty() ? "" : "\nСлова: " + wordList(draft.words());
+            var source = new ChatChoice(draft.from(), draft.source(), true);
+            var target = new ChatChoice(draft.to(), draft.target(), false);
+            var visible = visibleChats(store.identity(platform, owner), List.of(source, target));
             return name + app(draft.from()) + " → " + app(draft.to())
-                    + "\nИсточник: " + chatLabel(draft.from(), draft.source(), true)
-                    + "\nНазначение: " + chatLabel(draft.to(), draft.target(), false)
+                    + "\nИсточник: " + chatLabel(visible.get(source))
+                    + "\nНазначение: " + chatLabel(visible.get(target))
                     + "\nФильтр: " + filterLabel(draft.mode()) + words;
         }
 
-        String chatLabel(String platform, String chat, boolean source) {
-            String user = store.identity(this.platform, owner).on(platform);
-            var info = access.visibleChat(platform, chat, user, source);
+        String chatLabel(JsonNode info) {
             return info == null ? "Чат недоступен" : title(info);
         }
 

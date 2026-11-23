@@ -1,5 +1,6 @@
 package bridge;
 
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -26,8 +27,12 @@ final class Telegram {
 
     private JsonNode call(String method, JsonNode body, Upload upload) {
         String operation = "Telegram " + method;
-        JsonNode response = Transport.object(http.request(operation, uri(base, "/bot" + token + "/" + method, Map.of()),
+        return result(operation, http.request(operation, uri(base, "/bot" + token + "/" + method, Map.of()),
                 "POST", body, null, upload, false, false));
+    }
+
+    private static JsonNode result(String operation, byte[] data) {
+        JsonNode response = Transport.object(data);
         if (!response.path("ok").asBoolean(false)) {
             throw new ApiFailure(operation, response.path("error_code").asInt(0), "",
                     response.path("parameters").path("retry_after").asInt(0));
@@ -81,7 +86,10 @@ final class Telegram {
         if (notice != null) {
             body.put("text", notice);
         }
-        return call("answerCallbackQuery", body);
+        String method = "answerCallbackQuery";
+        String operation = "Telegram " + method;
+        return result(operation, http.request(operation, uri(base, "/bot" + token + "/" + method, Map.of()),
+                "POST", body, null, null, false, false, Duration.ofSeconds(3)));
     }
 
     JsonNode navigation(String chat) {
