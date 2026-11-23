@@ -101,11 +101,22 @@ final class Content {
     }
 
     static String telegramAttribution(JsonNode message, JsonNode author) {
-        String username = safeTitle(text(author, "username"));
-        String nickname = username.isEmpty() ? "ник не указан" : "@" + username;
         long seconds = message.path("date").asLong(0);
-        String published = seconds > 0 ? MOSCOW_TIME.format(Instant.ofEpochSecond(seconds)) : "время не указано";
-        return safeTitle(displayName(author)) + " (" + nickname + ", " + published + ")";
+        return attribution(displayName(author), text(author, "username"),
+                seconds > 0 ? Instant.ofEpochSecond(seconds) : null);
+    }
+
+    static String maxAttribution(JsonNode message, String author) {
+        long milliseconds = message.path("timestamp").asLong(0);
+        return attribution(author, text(message.path("sender"), "username"),
+                milliseconds > 0 ? Instant.ofEpochMilli(milliseconds) : null);
+    }
+
+    private static String attribution(String author, String username, Instant time) {
+        String handle = safeTitle(username);
+        String nickname = handle.isEmpty() ? "ник не указан" : "@" + handle;
+        String published = time == null ? "время не указано" : MOSCOW_TIME.format(time);
+        return safeTitle(author) + " (" + nickname + ", " + published + ")";
     }
 
     static String safeTitle(String value) {

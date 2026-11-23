@@ -15,6 +15,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -72,7 +73,7 @@ class BridgeTest {
         var source = rig.telegramEvent("ДОСТАВКА!", TG_OWNER, TG_GROUP, 88);
         var message = (ObjectNode) source.path("message");
         message.put("is_topic_message", true).put("message_thread_id", 17)
-                .put("date", java.time.Instant.parse("2026-11-23T10:07:45Z").getEpochSecond());
+                .put("date", Instant.parse("2026-11-23T10:07:45Z").getEpochSecond());
         ((ObjectNode) message.path("from")).put("first_name", "Анна").put("last_name", "Петрова")
                 .put("username", "anna_petrova");
         message.set("forward_origin", object("type", "hidden_user", "date", 1700000000,
@@ -87,13 +88,15 @@ class BridgeTest {
 
         rig.reopen();
         var answer = rig.maxEvent("/help needs a reply", MAX_OTHER, MAX_GROUP, "chat", mid);
+        ((ObjectNode) answer.path("message")).put("timestamp", Instant.parse("2026-11-23T10:09:12.360Z").toEpochMilli());
         rig.send("max", answer);
         rig.send("max", answer);
         var replies = rig.platforms.telegramSends.stream().filter(body -> body.has("reply_parameters")).toList();
         assertEquals(1, replies.size());
         assertEquals(88, replies.getFirst().path("reply_parameters").path("message_id").asInt());
         assertEquals(17, replies.getFirst().path("message_thread_id").asInt());
-        assertTrue(text(replies.getFirst(), "text").contains("/help needs a reply"));
+        assertEquals("Lena (ник не указан, 23.11.2026 13:09:12 МСК) · MAX\n\n/help needs a reply",
+                text(replies.getFirst(), "text"));
     }
 
     @Test
@@ -107,6 +110,7 @@ class BridgeTest {
         rig.reopen();
 
         var comment = rig.maxComment("Комментарий", MAX_OWNER, post);
+        ((ObjectNode) comment.path("message")).put("timestamp", Instant.parse("2026-11-23T10:15:25.737Z").toEpochMilli());
         rig.send("max", comment);
         rig.send("max", comment);
         var nested = rig.maxComment("Ответ на комментарий", MAX_OWNER, post);
@@ -114,7 +118,8 @@ class BridgeTest {
                 object("mid", text(comment.path("message").path("body"), "mid"))));
         rig.send("max", nested);
         var channelReply = rig.maxEvent("Ответ от имени канала", MAX_OWNER, MAX_CHANNEL, "channel", post);
-        ((ObjectNode) channelReply.path("message")).remove("sender");
+        ((ObjectNode) channelReply.path("message"))
+                .put("timestamp", Instant.parse("2026-11-23T10:17:18.425Z").toEpochMilli()).remove("sender");
         rig.send("max", channelReply);
         rig.send("max", channelReply);
         rig.send("max", rig.maxComment("Чужой пост", MAX_OWNER, "mid.unrelated"));
@@ -122,9 +127,12 @@ class BridgeTest {
 
         var replies = rig.platforms.telegramSends.stream().filter(body -> body.has("reply_parameters")).toList();
         assertEquals(3, replies.size());
-        assertEquals("Lena · MAX\n\nКомментарий", text(replies.getFirst(), "text"));
-        assertEquals("Lena · MAX\n\nОтвет на комментарий", text(replies.get(1), "text"));
-        assertEquals("Room " + MAX_CHANNEL + " · MAX\n\nОтвет от имени канала", text(replies.getLast(), "text"));
+        assertEquals("Lena (ник не указан, 23.11.2026 13:15:25 МСК) · MAX\n\nКомментарий",
+                text(replies.getFirst(), "text"));
+        assertEquals("Lena (ник не указан, время не указано) · MAX\n\nОтвет на комментарий",
+                text(replies.get(1), "text"));
+        assertEquals("Room " + MAX_CHANNEL + " (ник не указан, 23.11.2026 13:17:18 МСК) · MAX\n\nОтвет от имени канала",
+                text(replies.getLast(), "text"));
         for (var reply : replies) {
             assertEquals(TG_GROUP, reply.path("chat_id").asLong());
             assertEquals(88, reply.path("reply_parameters").path("message_id").asInt());
@@ -189,7 +197,7 @@ class BridgeTest {
         rig.platforms.protectedSource = false;
         var anonymousPost = rig.telegramEvent("allowed", TG_OWNER, TG_GROUP, 9);
         var message = (ObjectNode) anonymousPost.path("message");
-        message.put("date", java.time.Instant.parse("2026-11-23T21:04:08Z").getEpochSecond());
+        message.put("date", Instant.parse("2026-11-23T21:04:08Z").getEpochSecond());
         message.set("sender_chat", object("id", TG_GROUP, "type", "supergroup", "title", "Диспетчерская"));
         ((ObjectNode) message.path("from")).put("username", "GroupAnonymousBot").put("is_bot", true);
         rig.send("telegram", anonymousPost);
@@ -548,10 +556,16 @@ class BridgeTest {
 
         rig.max("Это реклама", MAX_OWNER, MAX_SOURCE, "chat", null);
         var source = rig.maxEvent("Новая заявка", MAX_OWNER, MAX_SOURCE, "chat", null);
+        source.put("timestamp", Instant.parse("2026-11-23T21:05:09Z").toEpochMilli());
+        var message = (ObjectNode) source.path("message");
+        message.put("timestamp", Instant.parse("2026-11-23T21:04:08.987Z").toEpochMilli());
+        ((ObjectNode) message.path("sender")).put("first_name", "Елена").put("last_name", "Соколова")
+                .put("username", "elena_sokolova");
         rig.send("max", source);
         var delivered = rig.platforms.telegramSends.stream().filter(value -> value.path("chat_id").asLong() == TG_GROUP).toList();
         assertEquals(1, delivered.size());
-        assertTrue(text(delivered.getFirst(), "text").contains("Новая заявка"));
+        assertEquals("Елена Соколова (@elena_sokolova, 24.11.2026 00:04:08 МСК) · MAX / Room " + MAX_SOURCE
+                + "\n\nНовая заявка", text(delivered.getFirst(), "text"));
         int forwardedId = rig.platforms.telegramMessageId;
         var reply = rig.telegramEvent("Принято", TG_OTHER, TG_GROUP, 8);
         ((ObjectNode) reply.path("message")).set("reply_to_message", object("message_id", forwardedId,

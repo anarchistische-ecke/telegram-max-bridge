@@ -215,7 +215,7 @@ final class Bridge {
             return;
         }
         String title = safeTitle(first(text(source, "title"), chat));
-        String header = safeTitle(displayName(sender)) + " · MAX / " + title;
+        String header = maxAttribution(message, displayName(sender)) + " · MAX / " + title;
         deliverRoutes("max", chat, routes, target -> {
             var origin = new Store.Origin(target, "max", chat, mid, null);
             sendMaxContentToTelegram(job, message, target.id(), null, null, header,
@@ -475,13 +475,14 @@ final class Bridge {
         if (access.source(origin.platform(), origin.source()) == null) {
             return;
         }
-        String header = safeTitle(author) + " · MAX";
-        var body = message.path("body");
-        String text = join("\n\n", header, showLinkUrls(text(body, "text"), body.path("markup")));
         if (origin.platform().equals("telegram")) {
+            String header = maxAttribution(message, author) + " · MAX";
             sendMaxContentToTelegram(job, message, origin.source(), origin.message(), origin.thread(), header, "return", null);
             return;
         }
+        String header = safeTitle(author) + " · MAX";
+        var body = message.path("body");
+        String text = join("\n\n", header, showLinkUrls(text(body, "text"), body.path("markup")));
         JsonNode link = object("type", "reply", "mid", origin.message());
         int index = 0;
         for (String part : splitText(text, 4000)) {
