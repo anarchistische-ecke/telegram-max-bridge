@@ -97,6 +97,42 @@ class BridgeTest {
     }
 
     @Test
+    void relaysMaxChannelCommentsToTheOriginalTelegramMessage() throws Exception {
+        rig = new Rig(temp);
+        rig.route(TG_OWNER, MAX_OWNER, TG_GROUP, MAX_CHANNEL, "all");
+        var source = rig.telegramEvent("Новость", TG_OWNER, TG_GROUP, 88);
+        ((ObjectNode) source.path("message")).put("is_topic_message", true).put("message_thread_id", 17);
+        rig.send("telegram", source);
+        String post = rig.platforms.to(MAX_CHANNEL).getFirst().mid();
+        rig.reopen();
+
+        var comment = rig.maxComment("Комментарий", MAX_OWNER, post);
+        rig.send("max", comment);
+        rig.send("max", comment);
+        var nested = rig.maxComment("Ответ на комментарий", MAX_OWNER, post);
+        ((ObjectNode) nested.path("message")).set("link", object("type", "reply", "message",
+                object("mid", text(comment.path("message").path("body"), "mid"))));
+        rig.send("max", nested);
+        var channelReply = rig.maxEvent("Ответ от имени канала", MAX_OWNER, MAX_CHANNEL, "channel", post);
+        ((ObjectNode) channelReply.path("message")).remove("sender");
+        rig.send("max", channelReply);
+        rig.send("max", channelReply);
+        rig.send("max", rig.maxComment("Чужой пост", MAX_OWNER, "mid.unrelated"));
+        rig.send("max", rig.maxComment("Не подписан", MAX_OTHER, post));
+
+        var replies = rig.platforms.telegramSends.stream().filter(body -> body.has("reply_parameters")).toList();
+        assertEquals(3, replies.size());
+        assertEquals("Lena · MAX\n\nКомментарий", text(replies.getFirst(), "text"));
+        assertEquals("Lena · MAX\n\nОтвет на комментарий", text(replies.get(1), "text"));
+        assertEquals("Room " + MAX_CHANNEL + " · MAX\n\nОтвет от имени канала", text(replies.getLast(), "text"));
+        for (var reply : replies) {
+            assertEquals(TG_GROUP, reply.path("chat_id").asLong());
+            assertEquals(88, reply.path("reply_parameters").path("message_id").asInt());
+            assertEquals(17, reply.path("message_thread_id").asInt());
+        }
+    }
+
+    @Test
     void protectsProfileOwnershipAndRechecksMembership() throws Exception {
         rig = new Rig(temp);
         rig.route(TG_OWNER, MAX_OWNER, TG_GROUP, MAX_GROUP, "include urgent");
@@ -397,7 +433,9 @@ class BridgeTest {
         assertEquals(1, rig.platforms.telegramRegistration.path("max_connections").asInt());
         assertEquals("https://bridge.example.com/webhook/max", text(rig.platforms.maxRegistration, "url"));
         assertEquals(MAX_SECRET, text(rig.platforms.maxRegistration, "secret"));
-        assertEquals(Update.MAX_TYPES, Set.copyOf(Json.strings(rig.platforms.maxRegistration.path("update_types"))));
+        var maxTypes = Set.copyOf(Json.strings(rig.platforms.maxRegistration.path("update_types")));
+        assertEquals(Update.MAX_TYPES, maxTypes);
+        assertTrue(maxTypes.contains("comment_created"));
     }
 
     @Test
@@ -692,6 +730,13 @@ class BridgeTest {
                         "sender", object("user_id", MAX_BOT)));
             }
             return object("update_type", "message_created", "message", message);
+        }
+
+        ObjectNode maxComment(String text, long user, String post) {
+            return object("update_type", "comment_created", "message",
+                    object("sender", object("user_id", user, "first_name", "Lena"),
+                            "recipient", object("chat_id", MAX_CHANNEL, "chat_type", "channel", "post_id", post),
+                            "body", object("mid", "comment." + updateId.incrementAndGet(), "text", text)));
         }
 
         void telegram(String text, long user, long chat, long id) throws Exception {

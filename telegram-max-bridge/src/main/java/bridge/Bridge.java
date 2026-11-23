@@ -133,6 +133,10 @@ final class Bridge {
     private void maxUpdate(Store.Job job, JsonNode update) {
         switch (text(update, "update_type")) {
             case "message_created" -> maxMessage(job, update.path("message"));
+            case "comment_created" -> {
+                var message = update.path("message");
+                handleMaxChannelReply(job, message, text(message.path("recipient"), "post_id"));
+            }
             case "message_callback" -> {
                 var callback = update.path("callback");
                 var message = update.path("message");
@@ -169,6 +173,13 @@ final class Bridge {
         String kind = text(recipient, "chat_type");
         if (chat != null && List.of("chat", "channel").contains(kind)) {
             store.rememberMaxChat(chat);
+        }
+        if (kind.equals("channel")) {
+            var link = message.path("link");
+            if (text(link, "type").equals("reply") && text(recipient, "post_id").isEmpty()) {
+                handleMaxChannelReply(job, message, text(link.path("message"), "mid"));
+            }
+            return;
         }
         var sender = message.path("sender");
         String user = value(sender, "user_id");
@@ -212,6 +223,31 @@ final class Bridge {
         });
     }
 
+    private void handleMaxChannelReply(Store.Job job, JsonNode message, String post) {
+        var sender = message.path("sender");
+        String user = value(sender, "user_id");
+        String chat = text(message.path("recipient"), "chat_id");
+        if (chat.isEmpty() || post.isEmpty() || text(message.path("body"), "mid").isEmpty()
+                || maxBotId.equals(user)) {
+            return;
+        }
+        var destination = new Destination("max", chat);
+        boolean pendingForward = forwardsInFlight.containsKey(destination);
+        var origin = store.origin(destination, post);
+        if (origin == null) {
+            if (pendingForward && Store.now() - job.received() < 30) {
+                throw new DeliveryQueue.Defer();
+            }
+            return;
+        }
+        var channel = access.maxChat(chat, "channel");
+        if (channel != null && (user == null || access.isMember("max", chat, user))) {
+            // MAX omits the sender when a reply is published on behalf of the channel.
+            String author = user == null ? first(text(channel, "title"), "Канал") : displayName(sender);
+            returnReply(job, message, origin, author);
+        }
+    }
+
     private boolean handleMaxReply(Store.Job job, String chat, String user, JsonNode message) {
         var link = message.path("link");
         String parent = text(link.path("message"), "mid");
@@ -230,7 +266,7 @@ final class Bridge {
             return false;
         }
         if (access.target(chat, user) != null) {
-            returnReply(job, message, origin);
+            returnReply(job, message, origin, displayName(message.path("sender")));
         }
         return true;
     }
@@ -435,11 +471,11 @@ final class Bridge {
         }
     }
 
-    private void returnReply(Store.Job job, JsonNode message, Store.Origin origin) {
+    private void returnReply(Store.Job job, JsonNode message, Store.Origin origin, String author) {
         if (access.source(origin.platform(), origin.source()) == null) {
             return;
         }
-        String header = safeTitle(displayName(message.path("sender"))) + " · MAX";
+        String header = safeTitle(author) + " · MAX";
         var body = message.path("body");
         String text = join("\n\n", header, showLinkUrls(text(body, "text"), body.path("markup")));
         if (origin.platform().equals("telegram")) {

@@ -9,7 +9,7 @@ import static bridge.Json.value;
 record Update(String platform, String key, String lane, JsonNode data) {
     static final Set<String> TELEGRAM_TYPES = Set.of("message", "callback_query", "my_chat_member");
     static final Set<String> MAX_TYPES = Set.of(
-            "message_created", "message_callback", "bot_started", "bot_added", "bot_removed",
+            "message_created", "comment_created", "message_callback", "bot_started", "bot_added", "bot_removed",
             "bot_admin_permissions_changed");
 
     static Update from(String platform, JsonNode data) {
@@ -35,6 +35,16 @@ record Update(String platform, String key, String lane, JsonNode data) {
             }
             return new Update(platform, type + ":" + id,
                     "max:user:" + value(callback.path("user"), "user_id"), data);
+        }
+        if (type.equals("comment_created")) {
+            var message = data.path("message");
+            var recipient = message.path("recipient");
+            String chat = text(recipient, "chat_id");
+            String mid = text(message.path("body"), "mid");
+            if (chat.isEmpty() || mid.isEmpty() || text(recipient, "post_id").isEmpty()) {
+                return null;
+            }
+            return new Update(platform, type + ":" + chat + ":" + mid, "max:chat:" + chat, data);
         }
         if (type.equals("message_created")) {
             var message = data.path("message");
