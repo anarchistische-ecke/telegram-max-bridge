@@ -84,6 +84,15 @@ final class Telegram {
         return call("answerCallbackQuery", body);
     }
 
+    JsonNode navigation(String chat) {
+        var keyboard = java.util.List.of(java.util.List.of(
+                        object("text", Menu.HOME_LABEL), object("text", Menu.PROFILES_LABEL)),
+                java.util.List.of(object("text", Menu.NEW_LABEL)));
+        return call("sendMessage", object("chat_id", Long.parseLong(chat), "text",
+                "Кнопки под полем ввода открывают меню и список профилей.",
+                "reply_markup", object("keyboard", keyboard, "resize_keyboard", true, "is_persistent", true)));
+    }
+
     byte[] download(String fileId) {
         var file = call("getFile", object("file_id", fileId));
         String path = text(file, "file_path");

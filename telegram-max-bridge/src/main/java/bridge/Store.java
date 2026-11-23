@@ -23,8 +23,24 @@ import tools.jackson.databind.JsonNode;
 final class Store implements AutoCloseable {
     record Job(long seq, String platform, String lane, String data, double received, int attempts) {}
     record Route(long id, String platform, String owner, String source, String target,
-                 String mode, List<String> terms, boolean active, double enabledSince) {}
-    record Origin(String target, String platform, String source, String message, String thread) {}
+                 String mode, List<String> terms, boolean active, double enabledSince,
+                 String targetPlatform, String name, long revision) {
+        Route(long id, String platform, String owner, String source, String target,
+              String mode, List<String> terms, boolean active, double enabledSince) {
+            this(id, platform, owner, source, target, mode, terms, active, enabledSince, "max", "", 0);
+        }
+
+        String label() {
+            return name.isBlank() ? "Профиль №" + id : name;
+        }
+    }
+    record Identity(String telegram, String max) {
+        String on(String platform) { return platform.equals("telegram") ? telegram : max; }
+        boolean owns(Route route) { return route.owner().equals(on(route.platform())); }
+        boolean linked() { return telegram != null && max != null; }
+    }
+    record Destination(String platform, String id) {}
+    record Origin(Destination destination, String platform, String source, String message, String thread) {}
 
     private record LegacyJob(long seq, String platform, String data) {}
     private record Pair(String telegram, String maxUser) {}
@@ -80,6 +96,7 @@ final class Store implements AutoCloseable {
 
     private void migrate() {
         transaction(() -> {
+            migrateProfiles();
             if (query("PRAGMA table_info(inbox)", row -> row.getString("name")).stream().noneMatch("lane"::equals)) {
                 execute("ALTER TABLE inbox ADD COLUMN lane TEXT");
             }
@@ -129,6 +146,52 @@ final class Store implements AutoCloseable {
         });
     }
 
+    private void migrateProfiles() throws SQLException {
+        if (query("PRAGMA table_info(routes)", row -> row.getString("name")).contains("target_platform")) {
+            return;
+        }
+        String previousSequence = scalar("SELECT seq FROM sqlite_sequence WHERE name='routes'");
+        execute("ALTER TABLE routes RENAME TO legacy_routes");
+        execute("""
+                CREATE TABLE routes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL, owner TEXT NOT NULL,
+                    source TEXT NOT NULL, target TEXT NOT NULL, mode TEXT NOT NULL, terms TEXT NOT NULL,
+                    active INTEGER NOT NULL, enabled_since REAL NOT NULL,
+                    target_platform TEXT NOT NULL DEFAULT 'max', name TEXT NOT NULL DEFAULT '',
+                    revision INTEGER NOT NULL DEFAULT 0
+                )
+                """);
+        execute("""
+                INSERT INTO routes(id, platform, owner, source, target, mode, terms, active, enabled_since)
+                SELECT id, platform, owner, source, target, mode, terms,
+                       CASE WHEN platform='max' THEN 0 ELSE active END, enabled_since FROM legacy_routes
+                """);
+        execute("DROP TABLE legacy_routes");
+        if (previousSequence != null) {
+            execute("INSERT INTO sqlite_sequence(name, seq) SELECT 'routes', ? WHERE NOT EXISTS "
+                    + "(SELECT 1 FROM sqlite_sequence WHERE name='routes')", Long.parseLong(previousSequence));
+            execute("UPDATE sqlite_sequence SET seq=MAX(seq, ?) WHERE name='routes'", Long.parseLong(previousSequence));
+        }
+        execute("CREATE INDEX routes_by_source ON routes(platform, source, active, target)");
+        execute("CREATE INDEX routes_by_owner ON routes(platform, owner, id)");
+
+        execute("ALTER TABLE message_links RENAME TO legacy_message_links");
+        execute("""
+                CREATE TABLE message_links (
+                    target TEXT NOT NULL, target_message TEXT NOT NULL, platform TEXT NOT NULL,
+                    source TEXT NOT NULL, source_message TEXT NOT NULL, thread TEXT,
+                    target_platform TEXT NOT NULL DEFAULT 'max',
+                    PRIMARY KEY (target_platform, target, target_message)
+                )
+                """);
+        execute("""
+                INSERT INTO message_links(target, target_message, platform, source, source_message, thread)
+                SELECT target, target_message, platform, source, source_message, thread FROM legacy_message_links
+                """);
+        execute("DROP TABLE legacy_message_links");
+        execute("DELETE FROM menus");
+    }
+
     void enqueue(Update update) {
         double received = now();
         locked(() -> execute("""
@@ -174,6 +237,7 @@ final class Store implements AutoCloseable {
             double now = now();
             execute("DELETE FROM inbox WHERE data IS NULL AND received < ?", now - 7 * 86400);
             execute("DELETE FROM link_codes WHERE expires <= ?", now);
+            execute("DELETE FROM max_link_codes WHERE expires <= ?", now);
             return null;
         });
     }
@@ -186,20 +250,21 @@ final class Store implements AutoCloseable {
     void saveStep(long seq, String action, JsonNode result, Origin origin) {
         transaction(() -> {
             if (origin != null) {
-                execute("INSERT INTO message_links VALUES (?, ?, ?, ?, ?, ?)", origin.target(), result.asString(),
-                        origin.platform(), origin.source(), origin.message(), origin.thread());
+                execute("INSERT INTO message_links VALUES (?, ?, ?, ?, ?, ?, ?)", origin.destination().id(),
+                        result.asString(), origin.platform(), origin.source(), origin.message(), origin.thread(),
+                        origin.destination().platform());
             }
             execute("INSERT INTO steps VALUES (?, ?, ?)", seq, action, result.toString());
             return null;
         });
     }
 
-    Origin origin(String target, String mid) {
+    Origin origin(Destination target, String mid) {
         return locked(() -> query("""
                 SELECT platform, source, source_message, thread FROM message_links
-                WHERE target=? AND target_message=?
+                WHERE target_platform=? AND target=? AND target_message=?
                 """, row -> new Origin(target, row.getString(1), row.getString(2), row.getString(3), row.getString(4)),
-                target, mid).stream().findFirst().orElse(null));
+                target.platform(), target.id(), mid).stream().findFirst().orElse(null));
     }
 
     void selectSource(String platform, String owner, String source) {
@@ -214,10 +279,22 @@ final class Store implements AutoCloseable {
     }
 
     String maxUser(String owner) {
-        return locked(() -> scalar("SELECT max_user FROM account_links WHERE telegram=?", owner));
+        return identity("telegram", owner).max();
+    }
+
+    Identity identity(String platform, String owner) {
+        return locked(() -> platform.equals("telegram")
+                ? new Identity(owner, scalar("SELECT max_user FROM account_links WHERE telegram=?", owner))
+                : new Identity(scalar("SELECT telegram FROM account_links WHERE max_user=?", owner), owner));
     }
 
     String issueLink(String owner, long seq) {
+        return issueLink("telegram", owner, seq);
+    }
+
+    String issueLink(String platform, String owner, long seq) {
+        String table = platform.equals("telegram") ? "link_codes" : "max_link_codes";
+        String column = platform.equals("telegram") ? "telegram" : "owner";
         return transaction(() -> {
             String saved = scalar("SELECT result FROM steps WHERE seq=? AND action='link-code'", seq);
             if (saved != null) {
@@ -226,31 +303,36 @@ final class Store implements AutoCloseable {
             byte[] random = new byte[24];
             RANDOM.nextBytes(random);
             String token = Base64.getUrlEncoder().withoutPadding().encodeToString(random);
-            execute("DELETE FROM link_codes WHERE telegram=?", owner);
-            execute("INSERT INTO link_codes VALUES (?, ?, ?)", Json.sha256(token), owner, now() + 600);
+            execute("DELETE FROM " + table + " WHERE " + column + "=?", owner);
+            execute("INSERT INTO " + table + " VALUES (?, ?, ?)", Json.sha256(token), owner, now() + 600);
             execute("INSERT INTO steps VALUES (?, 'link-code', ?)", seq, Json.MAPPER.writeValueAsString(token));
             return token;
         });
     }
 
-    String redeemLink(String token, String maxUser, long seq) {
+    String redeemLink(String platform, String token, String recipient, long seq) {
+        boolean openedInMax = platform.equals("max");
+        String table = openedInMax ? "link_codes" : "max_link_codes";
+        String column = openedInMax ? "telegram" : "owner";
         return transaction(() -> {
             String saved = scalar("SELECT result FROM steps WHERE seq=? AND action='linked'", seq);
             if (saved != null) {
                 return Json.MAPPER.readTree(saved).asString();
             }
             String digest = Json.sha256(token);
-            String owner = scalar("SELECT telegram FROM link_codes WHERE digest=? AND expires>?", digest, now());
+            String owner = scalar("SELECT " + column + " FROM " + table + " WHERE digest=? AND expires>?", digest, now());
             if (owner == null) {
-                return "Ссылка истекла или уже использована. Откройте «Аккаунт MAX» в меню бота Telegram и получите новую ссылку.";
+                return "Ссылка истекла или уже использована. Откройте меню в другом приложении и получите новую ссылку.";
             }
+            String telegram = openedInMax ? owner : recipient;
+            String maxUser = openedInMax ? recipient : owner;
             List<Pair> pairs = query("SELECT * FROM account_links WHERE telegram=? OR max_user=?",
-                    row -> new Pair(row.getString(1), row.getString(2)), owner, maxUser);
-            if (pairs.stream().anyMatch(pair -> !pair.telegram().equals(owner) || !pair.maxUser().equals(maxUser))) {
-                return "Один из аккаунтов уже подключён. Отключите его через «Аккаунт MAX» в Telegram.";
+                    row -> new Pair(row.getString(1), row.getString(2)), telegram, maxUser);
+            if (pairs.stream().anyMatch(pair -> !pair.telegram().equals(telegram) || !pair.maxUser().equals(maxUser))) {
+                return "Один из аккаунтов уже связан. Отключите старую связь в разделе «Аккаунты».";
             }
-            execute("INSERT OR IGNORE INTO account_links VALUES (?, ?)", owner, maxUser);
-            execute("DELETE FROM link_codes WHERE digest=?", digest);
+            execute("INSERT OR IGNORE INTO account_links VALUES (?, ?)", telegram, maxUser);
+            execute("DELETE FROM " + table + " WHERE digest=?", digest);
             String result = Menu.LINKED;
             execute("INSERT INTO steps VALUES (?, 'linked', ?)", seq, Json.MAPPER.writeValueAsString(result));
             return result;
@@ -258,10 +340,20 @@ final class Store implements AutoCloseable {
     }
 
     void unlink(String owner) {
+        unlink("telegram", owner);
+    }
+
+    void unlink(String platform, String owner) {
         transaction(() -> {
-            execute("DELETE FROM account_links WHERE telegram=?", owner);
-            execute("DELETE FROM link_codes WHERE telegram=?", owner);
-            execute("UPDATE routes SET active=0 WHERE platform='telegram' AND owner=?", owner);
+            var pair = identity(platform, owner);
+            execute("DELETE FROM account_links WHERE telegram=?", pair.telegram());
+            execute("DELETE FROM link_codes WHERE telegram=?", pair.telegram());
+            execute("DELETE FROM max_link_codes WHERE owner=?", pair.max());
+            execute("""
+                    UPDATE routes SET active=0, revision=revision+1
+                    WHERE (platform='telegram' AND owner=? AND target_platform='max')
+                       OR (platform='max' AND owner=? AND target_platform='telegram')
+                    """, pair.telegram(), pair.max());
             return null;
         });
     }
@@ -312,23 +404,71 @@ final class Store implements AutoCloseable {
         });
     }
 
-    Route routeFor(String platform, String owner, String source, String target) {
-        return locked(() -> query("SELECT * FROM routes WHERE platform=? AND owner=? AND source=? AND target=?",
-                Store::routeRow, platform, owner, source, target).stream().findFirst().orElse(null));
+    List<Route> userProfiles(String platform, String owner, int page, int size) {
+        return locked(() -> {
+            var user = identity(platform, owner);
+            return query("""
+                    SELECT * FROM routes
+                    WHERE platform<>target_platform
+                      AND ((platform='telegram' AND owner=?) OR (platform='max' AND owner=?))
+                    ORDER BY id LIMIT ? OFFSET ?
+                    """, Store::routeRow, user.telegram(), user.max(), size + 1, page * size);
+        });
     }
 
-    void editRoute(Route existing, String source, String target, String mode, List<String> terms, long seq) {
-        transaction(() -> {
-            if (scalar("SELECT result FROM steps WHERE seq=? AND action='menu-edit'", seq) == null) {
-                boolean sameChats = existing.source().equals(source) && existing.target().equals(target);
+    Route userProfile(String platform, String owner, long id) {
+        return locked(() -> {
+            var profile = query("SELECT * FROM routes WHERE id=? AND platform<>target_platform", Store::routeRow, id)
+                    .stream().findFirst().orElse(null);
+            return profile != null && identity(platform, owner).owns(profile) ? profile : null;
+        });
+    }
+
+    long saveProfile(Job job, String owner, Identity expectedUser, Menu.Draft draft) {
+        return transaction(() -> {
+            String prior = scalar("SELECT result FROM steps WHERE seq=? AND action='profile-save'", job.seq());
+            if (prior != null) return Long.parseLong(prior);
+            var user = identity(job.platform(), owner);
+            if (!user.equals(expectedUser) || !user.linked() || draft.from().equals(draft.to())) return 0L;
+            String sourceOwner = user.on(draft.from());
+            String words = Json.MAPPER.writeValueAsString(draft.words());
+            long id = draft.route();
+            if (id == 0) {
+                id = Long.parseLong(scalar("""
+                        INSERT INTO routes(platform, owner, source, target_platform, target, mode, terms,
+                                           name, active, enabled_since)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?) RETURNING id
+                        """, draft.from(), sourceOwner, draft.source(), draft.to(), draft.target(),
+                        draft.mode(), words, draft.name(), now()));
+            } else {
+                var existing = userProfile(job.platform(), owner, id);
+                if (existing == null || existing.revision() != draft.revision()) return 0L;
+                boolean sameChats = existing.platform().equals(draft.from())
+                        && existing.source().equals(draft.source())
+                        && existing.targetPlatform().equals(draft.to()) && existing.target().equals(draft.target());
                 execute("""
-                        UPDATE routes SET source=?, target=?, mode=?, terms=?, enabled_since=?
-                        WHERE id=? AND platform=? AND owner=?
-                        """, source, target, mode, Json.MAPPER.writeValueAsString(terms),
-                        sameChats ? existing.enabledSince() : now(), existing.id(), existing.platform(), existing.owner());
-                execute("INSERT INTO steps VALUES (?, 'menu-edit', 'true')", seq);
+                        UPDATE routes SET platform=?, owner=?, source=?, target_platform=?, target=?, mode=?,
+                                          terms=?, name=?, enabled_since=?, revision=revision+1 WHERE id=?
+                        """, draft.from(), sourceOwner, draft.source(), draft.to(), draft.target(), draft.mode(),
+                        words, draft.name(), sameChats ? existing.enabledSince() : now(), id);
             }
-            return null;
+            execute("INSERT INTO steps VALUES (?, 'profile-save', ?)", job.seq(), id);
+            return id;
+        });
+    }
+
+    boolean changeProfile(Job job, String owner, Route expected, String action) {
+        return transaction(() -> {
+            if (scalar("SELECT result FROM steps WHERE seq=? AND action='change-route'", job.seq()) != null) {
+                return true;
+            }
+            var current = userProfile(job.platform(), owner, expected.id());
+            if (!expected.equals(current)) return false;
+            if (action.equals("resume") && !current.platform().equals(current.targetPlatform())
+                    && !identity(job.platform(), owner).linked()) return false;
+            changeRouteRow(current.id(), action);
+            execute("INSERT INTO steps VALUES (?, 'change-route', ?)", job.seq(), Json.MAPPER.writeValueAsString(action));
+            return true;
         });
     }
 
@@ -336,17 +476,23 @@ final class Store implements AutoCloseable {
                   long seq) {
         return transaction(() -> {
             String saved = scalar("SELECT result FROM steps WHERE seq=? AND action='set-route'", seq);
-            if (saved != null) {
-                return Long.parseLong(saved);
+            if (saved != null) return Long.parseLong(saved);
+            String words = Json.MAPPER.writeValueAsString(terms);
+            String id = scalar("""
+                    SELECT id FROM routes WHERE platform=? AND owner=? AND source=? AND target=?
+                    AND target_platform='max' ORDER BY id LIMIT 1
+                    """, platform, owner, source, target);
+            if (id == null) {
+                id = scalar("""
+                        INSERT INTO routes(platform, owner, source, target, mode, terms, active, enabled_since)
+                        VALUES (?, ?, ?, ?, ?, ?, 1, ?) RETURNING id
+                        """, platform, owner, source, target, mode, words, now());
+            } else {
+                execute("""
+                        UPDATE routes SET mode=?, terms=?, active=1, revision=revision+1,
+                                          enabled_since=CASE WHEN active THEN enabled_since ELSE ? END WHERE id=?
+                        """, mode, words, now(), Long.parseLong(id));
             }
-            execute("""
-                    INSERT INTO routes(platform, owner, source, target, mode, terms, active, enabled_since)
-                    VALUES (?, ?, ?, ?, ?, ?, 1, ?) ON CONFLICT(platform, owner, source, target)
-                    DO UPDATE SET mode=excluded.mode, terms=excluded.terms, active=1,
-                        enabled_since=CASE WHEN routes.active THEN routes.enabled_since ELSE excluded.enabled_since END
-                    """, platform, owner, source, target, mode, Json.MAPPER.writeValueAsString(terms), now());
-            String id = scalar("SELECT id FROM routes WHERE platform=? AND owner=? AND source=? AND target=?",
-                    platform, owner, source, target);
             execute("INSERT INTO steps VALUES (?, 'set-route', ?)", seq, id);
             return Long.parseLong(id);
         });
@@ -354,7 +500,8 @@ final class Store implements AutoCloseable {
 
     List<Route> activeRoutes(String platform, String source, double received) {
         return locked(() -> query("""
-                SELECT * FROM routes WHERE platform=? AND source=? AND active=1 AND enabled_since<=?
+                SELECT * FROM routes WHERE platform=? AND source=? AND platform<>target_platform
+                  AND active=1 AND enabled_since<=?
                 ORDER BY target, id
                 """, Store::routeRow, platform, source, received));
     }
@@ -369,27 +516,33 @@ final class Store implements AutoCloseable {
                 Store::routeRow, platform, owner, id).stream().findFirst().orElse(null));
     }
 
-    void changeRoute(Route route, String command, String result, long seq) {
-        transaction(() -> {
-            switch (command) {
-                case "remove" -> execute("DELETE FROM routes WHERE id=?", route.id());
-                case "pause" -> execute("UPDATE routes SET active=0 WHERE id=?", route.id());
-                case "resume" -> execute("""
-                        UPDATE routes SET active=1, enabled_since=CASE WHEN active THEN enabled_since ELSE ? END
-                        WHERE id=?
-                        """, now(), route.id());
-                default -> throw new IllegalArgumentException("Unknown route action");
-            }
+    boolean changeRoute(Route route, String command, String result, long seq) {
+        return transaction(() -> {
+            if (!route.equals(route(route.platform(), route.owner(), route.id()))) return false;
+            changeRouteRow(route.id(), command);
             execute("INSERT INTO steps VALUES (?, 'change-route', ?)", seq, Json.MAPPER.writeValueAsString(result));
-            return null;
+            return true;
         });
+    }
+
+    private void changeRouteRow(long id, String action) throws SQLException {
+        switch (action) {
+            case "remove" -> execute("DELETE FROM routes WHERE id=?", id);
+            case "pause" -> execute("UPDATE routes SET active=0, revision=revision+1 WHERE id=?", id);
+            case "resume" -> execute("""
+                    UPDATE routes SET active=1, revision=revision+1,
+                                      enabled_since=CASE WHEN active THEN enabled_since ELSE ? END WHERE id=?
+                    """, now(), id);
+            default -> throw new IllegalArgumentException("Unknown profile action");
+        }
     }
 
     private static Route routeRow(ResultSet row) throws SQLException {
         return new Route(row.getLong("id"), row.getString("platform"), row.getString("owner"),
                 row.getString("source"), row.getString("target"), row.getString("mode"),
                 Json.strings(Json.MAPPER.readTree(row.getString("terms"))),
-                row.getBoolean("active"), row.getDouble("enabled_since"));
+                row.getBoolean("active"), row.getDouble("enabled_since"),
+                row.getString("target_platform"), row.getString("name"), row.getLong("revision"));
     }
 
     static double now() {

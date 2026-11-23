@@ -35,15 +35,29 @@ final class Menu {
         }
     }
 
-    record Draft(String source, String target, String mode, List<String> words, long route, String editing) {
-        static Draft empty() { return new Draft(null, null, null, List.of(), 0, ""); }
-        static Draft of(Store.Route route) {
-            return new Draft(route.source(), route.target(), route.mode(), route.terms(), route.id(), "");
+    record Draft(String from, String to, String source, String target, String mode, List<String> words,
+                 String name, long route, long revision, String editing) {
+        static Draft empty() {
+            return new Draft(null, null, null, null, null, List.of(), "", 0, 0, "");
         }
-        Draft source(String id) { return new Draft(id, target, mode, words, route, editing); }
-        Draft target(String id) { return new Draft(source, id, mode, words, route, editing); }
-        Draft filter(String mode, List<String> words) { return new Draft(source, target, mode, words, route, editing); }
-        Draft edit(String field) { return new Draft(source, target, mode, words, route, field); }
+        static Draft of(Store.Route route) {
+            return new Draft(route.platform(), route.targetPlatform(), route.source(), route.target(),
+                    route.mode(), route.terms(), route.name(), route.id(), route.revision(), "");
+        }
+        Draft direction(String platform) {
+            return new Draft(platform, other(platform), null, null, mode, words, name, route, revision, editing);
+        }
+        Draft source(String id) { return new Draft(from, to, id, target, mode, words, name, route, revision, editing); }
+        Draft target(String id) { return new Draft(from, to, source, id, mode, words, name, route, revision, editing); }
+        Draft filter(String kind, List<String> terms) {
+            return new Draft(from, to, source, target, kind, terms, name, route, revision, editing);
+        }
+        Draft name(String label) {
+            return new Draft(from, to, source, target, mode, words, label, route, revision, editing);
+        }
+        Draft edit(String field) {
+            return new Draft(from, to, source, target, mode, words, name, route, revision, field);
+        }
     }
 
     record State(String revision, String view, Draft draft, List<String> actions) {
@@ -52,12 +66,19 @@ final class Menu {
             return payload.startsWith(prefix) && actions.contains(payload.substring(prefix.length()));
         }
     }
-    private static final int PAGE_SIZE = 5;
+
+    private static final int PROFILE_PAGE_SIZE = 5;
     private static final int CHAT_PAGE_SIZE = 10;
-    private static final Button HOME = button("Главное меню", "home");
-    private static final Button ROUTES = button("Мои пересылки", "routes");
+    static final String HOME_LABEL = "Главное меню";
+    static final String PROFILES_LABEL = "Мои профили";
+    static final String NEW_LABEL = "Новый профиль";
+    private static final Button HOME = button(HOME_LABEL, "home");
+    private static final Button PROFILES = button(PROFILES_LABEL, "profiles:0");
+    private static final Button NEW = button(NEW_LABEL, "new");
     private static final String STALE = "Это меню устарело. Откройте /start.";
-    static final String LINKED = "Аккаунты связаны. Вернитесь в Telegram, чтобы продолжить.";
+    private static final String CHANGED = "Профиль уже изменён. Проверьте текущие настройки.";
+    static final String LINKED = "Аккаунты связаны.";
+
     private final Store store;
     private final ChatAccess access;
     private final Commands commands;
@@ -69,52 +90,48 @@ final class Menu {
     }
 
     Screen group(String platform, String chat) {
-        return new Screen("Настройте пересылку из этой группы в личном чате с ботом.", "", List.of(
-                List.of(link("Настроить пересылку", commands.privateLink(platform, "src_" + chat)))));
+        return new Screen("Создайте профиль для этой группы в личном чате с ботом.", "", List.of(
+                List.of(link("Настроить профиль", commands.privateLink(platform, "src_" + chat)))));
     }
 
     Screen entry(Store.Job job, String owner, Commands.Command command) {
         String name = command.name();
         String arg = command.argument();
-        if (!List.of("start", "help", "bridge").contains(name) && !(job.platform().equals("max") && name.equals("link"))) {
+        if (!List.of("start", "help", "bridge").contains(name)
+                && !(name.equals("link") && (!arg.isBlank() || job.platform().equals("max")))) {
             return null;
         }
         var session = new Session(job, owner);
-        if (session.previous != null) {
-            return session.previous;
-        }
-        if (name.equals("help")) {
-            return session.help();
-        }
-        if (arg.startsWith("src_") && name.equals("start")) {
+        if (session.previous != null) return session.previous;
+        if (name.equals("help")) return session.help();
+        if (name.equals("start") && arg.startsWith("src_")) {
             try {
-                return session.pickSource(Draft.empty(), Commands.chatId(arg.substring(4)));
+                return session.pickChat(Draft.empty().direction(job.platform()), true, Commands.chatId(arg.substring(4)));
             } catch (IllegalArgumentException error) {
                 return session.home("Откройте настройку из нужной группы.");
             }
         }
-        if (job.platform().equals("max") && (arg.startsWith("link_") && name.equals("start") || name.equals("link"))) {
+        if (name.equals("start") && arg.startsWith("link_") || name.equals("link")) {
             String code = name.equals("link") ? arg : arg.substring(5);
-            String result = code.matches("[A-Za-z0-9_-]{32}") ? store.redeemLink(code, owner, job.seq())
-                    : "Откройте ссылку «Подключить MAX» в боте Telegram.";
+            String result = code.matches("[A-Za-z0-9_-]{32}")
+                    ? store.redeemLink(job.platform(), code, owner, job.seq())
+                    : "Откройте ссылку для привязки в другом приложении.";
             if (LINKED.equals(result)) {
+                String previousApp = other(job.platform());
                 return session.screen("linked", Draft.empty(), result,
-                        link("Продолжить в Telegram", commands.privateLink("telegram", "resume")), HOME);
+                        link("Продолжить · " + app(previousApp), commands.privateLink(previousApp, "resume")), HOME);
             }
             return session.home(result);
         }
-        if (job.platform().equals("telegram") && name.equals("start") && arg.equals("resume")
-                && session.state != null && session.state.view().equals("link")) {
+        if (name.equals("start") && arg.equals("resume") && session.state != null
+                && session.state.view().startsWith("link:")) {
             return session.continueLink(session.state.draft());
         }
         return session.home("");
     }
 
     boolean current(Store.Job job, String owner, String payload) {
-        var saved = store.step(job.seq(), "menu-screen");
-        if (saved != null) {
-            return true;
-        }
+        if (store.step(job.seq(), "menu-screen") != null) return true;
         var state = store.menu(job.platform(), owner);
         return state != null && state.accepts(payload);
     }
@@ -123,35 +140,38 @@ final class Menu {
 
     Screen callback(Store.Job job, String owner, String payload) {
         var session = new Session(job, owner);
-        if (session.previous != null) {
-            return session.previous;
-        }
-        if (session.state == null || !session.state.accepts(payload)) {
-            return null;
-        }
+        if (session.previous != null) return session.previous;
+        if (session.state == null || !session.state.accepts(payload)) return null;
         String[] parts = payload.split(":", 4);
-        try {
-            return session.action(parts[2], parts.length == 4 ? parts[3] : "");
-        } catch (IllegalArgumentException | IndexOutOfBoundsException error) {
-            return session.home(STALE);
-        }
+        return session.action(parts[2], parts.length == 4 ? parts[3] : "");
     }
 
     Screen input(Store.Job job, String owner, String input) {
         var session = new Session(job, owner);
-        if (session.previous != null) {
-            return session.previous;
+        if (session.previous != null) return session.previous;
+        if (job.platform().equals("telegram")) {
+            switch (input.strip()) {
+                case HOME_LABEL: return session.home("");
+                case PROFILES_LABEL: return session.profiles(0, "");
+                case NEW_LABEL: return session.directions(Draft.empty());
+                default: break;
+            }
         }
-        if (session.state == null) {
-            return session.home("");
-        }
+        if (session.state == null) return session.home("");
+        var draft = session.state.draft();
         if (session.state.view().equals("words")) {
-            var draft = session.state.draft();
             try {
                 return session.review(draft.filter(draft.mode(), Content.parseFilter(draft.mode(), input.replace('\n', ','))));
             } catch (IllegalArgumentException error) {
-                return session.words(draft, "Введите от 1 до 30 слов или фраз через запятую. До 100 символов в каждом.");
+                return session.words(draft, error.getMessage());
             }
+        }
+        if (session.state.view().equals("name")) {
+            String label = safeTitle(input);
+            if (label.isEmpty() || Content.size(label) > 40) {
+                return session.name(draft, "Введите название длиной от 1 до 40 символов.");
+            }
+            return session.review(draft.name(label));
         }
         return new Screen("Продолжите с помощью кнопок в меню.", "", List.of(
                 List.of(link("Открыть главное меню", commands.privateLink(job.platform(), "menu")))));
@@ -168,7 +188,7 @@ final class Menu {
             this.job = job;
             this.platform = job.platform();
             this.owner = owner;
-            this.state = store.menu(platform, owner);
+            state = store.menu(platform, owner);
             var saved = store.step(job.seq(), "menu-screen");
             previous = saved == null ? null : MAPPER.treeToValue(saved, Screen.class);
         }
@@ -178,133 +198,128 @@ final class Menu {
             return switch (action) {
                 case "home" -> home("");
                 case "help" -> help();
-                case "new" -> choices(Draft.empty(), true, 0);
+                case "new" -> directions(Draft.empty());
+                case "direction" -> choices(draft.direction(arg), true, 0);
                 case "sources" -> choices(draft, true, page(arg));
-                case "targets" -> targets(draft, page(arg));
-                case "source" -> pickSource(draft, Commands.chatId(arg));
-                case "target" -> pickTarget(draft, Commands.chatId(arg));
+                case "targets" -> choices(draft, false, page(arg));
+                case "source" -> pickChat(draft, true, Commands.chatId(arg));
+                case "target" -> pickChat(draft, false, Commands.chatId(arg));
                 case "filters" -> filters(draft);
-                case "mode" -> switch (arg) {
-                    case "all" -> review(draft.filter("all", List.of()));
-                    case "include", "exclude" -> words(draft.filter(arg, draft.words()), "");
-                    default -> filters(draft);
-                };
-                case "keepWords" -> review(draft);
+                case "mode" -> arg.equals("all") ? review(draft.filter("all", List.of()))
+                        : words(draft.filter(arg, draft.words()), "");
+                case "keepWords", "review" -> review(draft);
+                case "name" -> name(draft, "");
                 case "save" -> save(draft);
-                case "routes" -> routes(page(arg), "");
-                case "route" -> detail(Long.parseLong(arg), "");
+                case "profiles" -> profiles(page(arg), "");
+                case "profile" -> detail(Long.parseLong(arg), "");
+                case "editDirection" -> directions(draft.edit("direction"));
                 case "editSource" -> choices(draft.edit("source"), true, 0);
-                case "editTarget" -> targets(draft.edit("target"), 0);
+                case "editTarget" -> choices(draft.edit("target"), false, 0);
                 case "editFilter" -> filters(draft.edit("filter"));
+                case "editName" -> name(draft.edit("name"), "");
                 case "pause", "resume" -> change(draft, action);
-                case "remove" -> screen("confirm-delete", draft, "Удалить эту пересылку?",
+                case "remove" -> screen("confirm-delete", draft, "Удалить этот профиль и остановить пересылку?",
                         button("Удалить", "delete"), back(draft));
                 case "delete" -> change(draft, "remove");
                 case "account" -> account();
                 case "linkReady" -> continueLink(draft);
                 case "unlink" -> screen("confirm-unlink", draft,
-                        "Отключить MAX? Пересылки из Telegram будут приостановлены.",
-                        button("Отключить MAX", "disconnect"), HOME);
+                        "Разорвать связь аккаунтов? Пересылка между Telegram и MAX будет приостановлена.",
+                        button("Разорвать связь", "disconnect"), HOME);
                 case "disconnect" -> {
-                    store.unlink(owner);
-                    yield home("Аккаунт MAX отключён.");
+                    store.unlink(platform, owner);
+                    yield home("Связь аккаунтов отключена.");
                 }
                 default -> home(STALE);
             };
         }
 
         Screen home(String notice) {
-            var buttons = new ArrayList<Button>(List.of(button("Настроить пересылку", "new"),
-                    ROUTES, button("Помощь", "help")));
-            if (platform.equals("telegram")) {
-                buttons.add(button("Аккаунт MAX", "account"));
-            }
-            return screen("home", Draft.empty(), Content.join("\n\n", notice,
-                    "Пересылка сообщений в MAX\nВыберите, что хотите сделать."), buttons);
+            String text = store.userProfiles(platform, owner, 0, 1).isEmpty()
+                    ? "Создайте первый профиль, чтобы настроить пересылку между Telegram и MAX."
+                    : "Выберите профиль или добавьте новую пересылку.";
+            return screen("home", Draft.empty(), Content.join("\n\n", notice, text),
+                    NEW, PROFILES, button("Аккаунты", "account"), button("Помощь", "help"));
         }
 
         Screen help() {
             return screen("help", Draft.empty(), """
-                    Добавьте бота администратором в группу-источник и в группу или канал MAX, куда нужна пересылка.
+                    Профиль — это направление пересылки, группа-источник, чат назначения и фильтр.
 
-                    В главном меню нажмите «Настроить пересылку». Выберите источник, место назначения и фильтр. Для пересылки из Telegram бот предложит подключить аккаунт MAX.
+                    Добавьте ботов администраторами в выбранные чаты. В каналах дайте им право публиковать сообщения.
 
-                    Если группы ещё нет в списке, напишите /bridge в группе-источнике или дождитесь нового сообщения. Для канала MAX проверьте права бота на чтение и публикацию.
+                    Нажмите «Новый профиль», выберите направление и нужные чаты. Связать аккаунты Telegram и MAX достаточно один раз.
 
-                    Чтобы ответить в исходную группу, нажмите «Ответить» на пересланном сообщении в группе MAX.
-                    """.strip(), button("Настроить пересылку", "new"), HOME);
+                    Если группы нет в списке, откройте настройку кнопкой после /bridge в этой группе. Если не видно канала, проверьте права бота и обновите список.
+
+                    Чтобы ответить в исходную группу, нажмите «Ответить» на пересланном сообщении в группе назначения.
+                    """.strip(), NEW, HOME);
         }
 
-        Screen choices(Draft draft, boolean sources, int page) {
-            List<String> ids = sources && platform.equals("telegram")
-                    ? store.telegramSources(owner, page, CHAT_PAGE_SIZE) : store.maxChats(page, CHAT_PAGE_SIZE);
-            String memberPlatform = sources ? platform : "max";
-            String member = sources ? owner : commands.targetUser(platform, owner);
+        Screen directions(Draft draft) {
+            return screen("directions", draft, "Выберите направление пересылки.",
+                    button("Telegram → MAX", "direction:telegram"),
+                    button("MAX → Telegram", "direction:max"), back(draft));
+        }
+
+        Screen choices(Draft draft, boolean source, int page) {
+            String selectedPlatform = source ? draft.from() : draft.to();
+            String member = store.identity(platform, owner).on(selectedPlatform);
+            if (member == null) return linkAccounts(draft, source ? "sources" : "targets");
+            List<String> ids = selectedPlatform.equals("telegram")
+                    ? store.telegramSources(member, page, CHAT_PAGE_SIZE) : store.maxChats(page, CHAT_PAGE_SIZE);
             var buttons = new ArrayList<Button>();
             for (String id : ids.subList(0, Math.min(CHAT_PAGE_SIZE, ids.size()))) {
-                if (platform.equals("max") && id.equals(sources ? draft.target() : draft.source())) {
-                    continue;
-                }
-                var info = access.visibleChat(memberPlatform, id, member, sources);
+                var info = access.visibleChat(selectedPlatform, id, member, source);
                 if (info != null) {
                     String label = title(info);
-                    if (!sources && text(info, "type").equals("channel")) {
-                        label += " · канал";
-                    }
-                    buttons.add(button(label, (sources ? "source:" : "target:") + id));
+                    if (!source && text(info, "type").equals("channel")) label = truncate(label, 49) + " · канал";
+                    buttons.add(button(label, (source ? "source:" : "target:") + id));
                 }
             }
-            String title = sources ? "Откуда пересылать сообщения?" : "Куда пересылать в MAX?";
+            String title = source ? "Из какой группы " + app(selectedPlatform) + " пересылать?"
+                    : "В какую группу или канал " + app(selectedPlatform) + " пересылать?";
             if (buttons.isEmpty()) {
-                title += sources
-                        ? "\nНа этой странице нет доступных групп. Добавьте бота администратором в нужную группу. В группе можно открыть настройку через /bridge."
-                        : "\nНа этой странице нет доступных чатов. Добавьте бота администратором в группу или канал MAX и проверьте, что вы состоите в чате.";
+                title += "\nЗдесь пока нет доступных чатов. Проверьте своё участие и права бота.";
+                if (source) title += " Можно открыть настройку через /bridge в нужной группе.";
             }
-            String action = sources ? "sources:" : "targets:";
+            String action = source ? "sources:" : "targets:";
             if (page > 0) buttons.add(button("Предыдущая страница", action + (page - 1)));
             if (ids.size() > CHAT_PAGE_SIZE) buttons.add(button("Следующая страница", action + (page + 1)));
             buttons.add(button("Обновить список", action + page));
-            buttons.add(draft.route() > 0 ? back(draft) : sources ? HOME : button("Назад к группам", "sources:0"));
-            return screen(sources ? "sources" : "targets", draft, title, buttons);
+            buttons.add(draft.route() > 0 ? back(draft)
+                    : source ? button("Сменить направление", "new") : button("Назад к группам", "sources:0"));
+            return screen(source ? "sources" : "targets", draft, title, buttons);
         }
 
-        Screen pickSource(Draft draft, String id) {
-            if (access.source(platform, id, owner) == null || platform.equals("max") && id.equals(draft.target())) {
-                return screen("unavailable", draft, "Эта группа недоступна. Проверьте, что вы состоите в ней, а бот может читать сообщения.",
-                        button("Выбрать группу", "sources:0"), back(draft));
+        Screen pickChat(Draft draft, boolean source, String id) {
+            String selectedPlatform = source ? draft.from() : draft.to();
+            String member = store.identity(platform, owner).on(selectedPlatform);
+            if (member == null) return linkAccounts(draft, source ? "sources" : "targets");
+            var info = source ? access.source(selectedPlatform, id, member) : access.target(selectedPlatform, id, member);
+            if (info == null) {
+                return screen("unavailable", draft, "Чат недоступен. Проверьте своё участие и права бота.",
+                        button("Выбрать другой чат", source ? "sources:0" : "targets:0"), back(draft));
             }
-            store.selectSource(platform, owner, id);
-            var selected = draft.source(id);
-            return draft.editing().equals("source") ? review(selected) : targets(selected, 0);
-        }
-
-        Screen targets(Draft draft, int page) {
-            return commands.targetUser(platform, owner) == null ? linkMax(draft) : choices(draft, false, page);
-        }
-
-        Screen pickTarget(Draft draft, String id) {
-            String maxUser = commands.targetUser(platform, owner);
-            if (maxUser == null) return linkMax(draft);
-            if (access.target(id, maxUser) == null || platform.equals("max") && id.equals(draft.source())) {
-                return screen("unavailable", draft, "Этот чат MAX недоступен. Проверьте своё участие и права бота.",
-                        button("Выбрать другой чат", "targets:0"), back(draft));
+            if (source) {
+                if (selectedPlatform.equals(platform)) store.selectSource(platform, owner, id);
+                var selected = draft.source(id);
+                return draft.editing().equals("source") ? review(selected) : choices(selected, false, 0);
             }
             var selected = draft.target(id);
-            return draft.editing().equals("target") ? review(selected) : filters(selected);
+            return draft.mode() == null ? filters(selected) : review(selected);
         }
 
         Screen filters(Draft draft) {
             return screen("filters", draft, "Какие сообщения пересылать?",
-                    button("Все сообщения", "mode:all"),
-                    button("Только с нужными словами", "mode:include"),
+                    button("Все сообщения", "mode:all"), button("Только с нужными словами", "mode:include"),
                     button("Все, кроме сообщений со стоп-словами", "mode:exclude"),
-                    draft.route() > 0 ? back(draft) : button("Назад к чатам MAX", "targets:0"));
+                    draft.route() > 0 ? back(draft) : button("Назад к чатам", "targets:0"));
         }
 
         Screen words(Draft draft, String notice) {
-            String prompt = draft.mode().equals("include")
-                    ? "Напишите слова или фразы, которые хотите находить."
-                    : "Напишите стоп-слова или фразы. Сообщения с ними будут пропускаться.";
+            String prompt = draft.mode().equals("include") ? "Введите слова или фразы для поиска."
+                    : "Введите стоп-слова или фразы. Сообщения с ними будут пропущены.";
             var buttons = new ArrayList<Button>();
             if (!draft.words().isEmpty()) {
                 prompt += "\n\nТекущие слова: " + wordList(draft.words());
@@ -313,128 +328,131 @@ final class Menu {
             buttons.add(button("Назад к фильтрам", "filters"));
             buttons.add(back(draft));
             return screen("words", draft, Content.join("\n\n", notice, prompt,
-                            "Разделяйте их запятыми. Например, заявка, срочный ремонт"),
-                    buttons);
+                    "Разделяйте их запятыми или вводите с новой строки."), buttons);
+        }
+
+        Screen name(Draft draft, String notice) {
+            return screen("name", draft, Content.join("\n\n", notice,
+                            "Введите название профиля. Например, «Заявки на ремонт»."),
+                    button("Назад к проверке", "review"), back(draft));
         }
 
         Screen review(Draft draft) {
-            return screen("review", draft, "Проверьте настройки\n\n" + summary(draft),
-                    button(draft.route() > 0 ? "Сохранить" : "Запустить пересылку", "save"),
-                    button("Назад", switch (draft.editing()) {
-                        case "source" -> "sources:0";
-                        case "target" -> "targets:0";
-                        default -> draft.mode().equals("all") ? "filters" : "mode:" + draft.mode();
-                    }), back(draft));
+            var buttons = new ArrayList<Button>();
+            buttons.add(button(draft.route() > 0 ? "Сохранить" : "Создать и запустить", "save"));
+            if (draft.route() == 0) buttons.add(button("Дать название", "name"));
+            buttons.add(button("Назад", switch (draft.editing()) {
+                case "direction", "target" -> "targets:0";
+                case "source" -> "sources:0";
+                case "name" -> "profile:" + draft.route();
+                default -> draft.mode().equals("all") ? "filters" : "mode:" + draft.mode();
+            }));
+            buttons.add(back(draft));
+            return screen("review", draft, "Проверьте профиль\n\n" + summary(draft), buttons);
         }
 
         Screen save(Draft draft) {
-            var saved = store.step(job.seq(), "set-route");
-            if (saved != null) {
-                return detail(saved.asLong(), "Пересылка настроена.");
-            }
-            if (store.step(job.seq(), "menu-edit") != null) {
-                return detail(draft.route(), "Настройки сохранены.");
-            }
-            String maxUser = commands.targetUser(platform, owner);
-            if (maxUser == null) return linkMax(draft);
-            if (access.source(platform, draft.source(), owner) == null || access.target(draft.target(), maxUser) == null) {
-                return screen("unavailable", draft, "Не удалось сохранить пересылку. Проверьте участие в чатах и права бота.",
+            var prior = store.step(job.seq(), "profile-save");
+            if (prior != null) return detail(prior.asLong(), "Профиль сохранён.");
+            var user = store.identity(platform, owner);
+            if (!user.linked()) return linkAccounts(draft, "review");
+            if (access.visibleChat(draft.from(), draft.source(), user.on(draft.from()), true) == null
+                    || access.target(draft.to(), draft.target(), user.on(draft.to())) == null) {
+                return screen("unavailable", draft, "Не удалось сохранить профиль. Проверьте своё участие в чатах и права ботов.",
                         button("Проверить снова", "save"), back(draft));
             }
-            var duplicate = store.routeFor(platform, owner, draft.source(), draft.target());
-            if (duplicate != null && duplicate.id() != draft.route()) {
-                return detail(duplicate.id(), "Для этих чатов уже есть пересылка. Её можно изменить здесь.");
-            }
-            if (draft.route() == 0) {
-                long id = store.setRoute(platform, owner, draft.source(), draft.target(), draft.mode(), draft.words(), job.seq());
-                return detail(id, "Пересылка настроена.");
-            }
-            var existing = store.route(platform, owner, draft.route());
-            if (existing == null) return routes(0, "Пересылка уже удалена.");
-            store.editRoute(existing, draft.source(), draft.target(), draft.mode(), draft.words(), job.seq());
-            return detail(existing.id(), "Настройки сохранены.");
+            long id = store.saveProfile(job, owner, user, draft);
+            if (id == 0) return draft.route() == 0 ? home(CHANGED) : detail(draft.route(), CHANGED);
+            return detail(id, draft.route() == 0 ? "Профиль создан." : "Профиль сохранён.");
         }
 
-        Screen routes(int page, String notice) {
-            var routes = store.routes(platform, owner, page, PAGE_SIZE);
+        Screen profiles(int page, String notice) {
+            var profiles = store.userProfiles(platform, owner, page, PROFILE_PAGE_SIZE);
             var buttons = new ArrayList<Button>();
-            for (var route : routes.subList(0, Math.min(routes.size(), PAGE_SIZE))) {
-                String from = truncate(chatLabel(platform, route.source(), false), 24);
-                String to = truncate(chatLabel("max", route.target(), true), 24);
-                buttons.add(button((route.active() ? "" : "⏸ ") + from + " → " + to, "route:" + route.id()));
+            for (var profile : profiles.subList(0, Math.min(profiles.size(), PROFILE_PAGE_SIZE))) {
+                String label = profile.name().isBlank()
+                        ? truncate(chatLabel(profile.platform(), profile.source(), true), 21) + " → "
+                            + truncate(chatLabel(profile.targetPlatform(), profile.target(), false), 21)
+                        : profile.label();
+                buttons.add(button((profile.active() ? "" : "⏸ ") + label, "profile:" + profile.id()));
             }
-            if (page > 0) buttons.add(button("Предыдущая страница", "routes:" + (page - 1)));
-            if (routes.size() > PAGE_SIZE) buttons.add(button("Следующая страница", "routes:" + (page + 1)));
-            buttons.add(button("Добавить пересылку", "new"));
+            if (page > 0) buttons.add(button("Предыдущая страница", "profiles:" + (page - 1)));
+            if (profiles.size() > PROFILE_PAGE_SIZE) buttons.add(button("Следующая страница", "profiles:" + (page + 1)));
+            buttons.add(NEW);
             buttons.add(HOME);
-            String title = routes.isEmpty() && page == 0 ? "У вас пока нет пересылок." : "Мои пересылки";
-            return screen("routes", Draft.empty(), Content.join("\n\n", notice, title), buttons);
+            String title = profiles.isEmpty() && page == 0 ? "У вас пока нет профилей." : PROFILES_LABEL;
+            return screen("profiles", Draft.empty(), Content.join("\n\n", notice, title), buttons);
         }
 
         Screen detail(long id, String notice) {
-            var route = store.route(platform, owner, id);
-            if (route == null) return routes(0, "Эта пересылка уже удалена.");
-            var draft = Draft.of(route);
-            String state = route.active() ? "Пересылка включена" : "Пересылка на паузе";
-            return screen("detail", draft, Content.join("\n\n", notice, state, summary(draft)),
-                    button("Изменить фильтр", "editFilter"), button("Изменить источник", "editSource"),
-                    button("Изменить чат MAX", "editTarget"),
-                    route.active() ? button("Приостановить", "pause") : button("Возобновить", "resume"),
-                    button("Удалить пересылку", "remove"), ROUTES, HOME);
+            var profile = store.userProfile(platform, owner, id);
+            if (profile == null) return profiles(0, "Профиль недоступен.");
+            var draft = Draft.of(profile);
+            String state = profile.active() ? "Пересылка включена" : "Пересылка на паузе";
+            return screen("detail", draft, Content.join("\n\n", notice, profile.label() + "\n" + state, summary(draft)),
+                    button("Изменить направление", "editDirection"), button("Изменить источник", "editSource"),
+                    button("Изменить чат назначения", "editTarget"), button("Изменить фильтр", "editFilter"),
+                    button("Переименовать", "editName"),
+                    profile.active() ? button("Приостановить", "pause") : button("Возобновить", "resume"),
+                    button("Удалить профиль", "remove"), PROFILES, HOME);
         }
 
         Screen change(Draft draft, String action) {
             if (store.step(job.seq(), "change-route") == null) {
-                var route = store.route(platform, owner, draft.route());
-                if (route == null) return routes(0, "Пересылка уже удалена.");
+                var profile = store.userProfile(platform, owner, draft.route());
+                if (profile == null) return profiles(0, "Профиль недоступен.");
+                if (profile.revision() != draft.revision()) return detail(draft.route(), CHANGED);
                 if (action.equals("resume")) {
-                    String maxUser = commands.targetUser(platform, owner);
-                    if (maxUser == null || access.source(platform, route.source(), owner) == null
-                            || access.target(route.target(), maxUser) == null) {
-                        return detail(route.id(), "Восстановите доступ к чатам, чтобы возобновить пересылку.");
+                    var user = store.identity(platform, owner);
+                    if (access.visibleChat(draft.from(), draft.source(), user.on(draft.from()), true) == null
+                            || access.target(draft.to(), draft.target(), user.on(draft.to())) == null) {
+                        return detail(profile.id(), "Для возобновления проверьте доступ к чатам и связь аккаунтов.");
                     }
                 }
-                store.changeRoute(route, action, action, job.seq());
+                if (!store.changeProfile(job, owner, profile, action)) return detail(profile.id(), CHANGED);
             }
-            return action.equals("remove") ? routes(0, "Пересылка удалена.") : detail(draft.route(), "");
+            return action.equals("remove") ? profiles(0, "Профиль удалён.") : detail(draft.route(), "");
         }
 
         Screen account() {
-            return commands.targetUser(platform, owner) == null ? linkMax(Draft.empty())
-                    : screen("account", Draft.empty(), "Аккаунт MAX подключён.",
-                    button("Отключить аккаунт", "unlink"), HOME);
+            return store.identity(platform, owner).linked()
+                    ? screen("account", Draft.empty(), "Аккаунты Telegram и MAX связаны.",
+                        button("Разорвать связь", "unlink"), HOME)
+                    : linkAccounts(Draft.empty(), "home");
         }
 
-        Screen linkMax(Draft draft) {
-            if (!platform.equals("telegram")) return home("");
-            String token = store.issueLink(owner, job.seq());
-            return screen("link", draft, """
-                    Подключите аккаунт MAX один раз, чтобы бот показал доступные вам группы и каналы.
-
-                    Нажмите «Открыть MAX», затем «Продолжить в Telegram».
-                    """.strip(), link("Открыть MAX", commands.privateLink("max", "link_" + token)),
+        Screen linkAccounts(Draft draft, String next) {
+            String other = other(platform);
+            String token = store.issueLink(platform, owner, job.seq());
+            return screen("link:" + next, draft, "Свяжите аккаунты один раз, чтобы выбирать чаты в обоих приложениях.\n\n"
+                            + "Откройте " + app(other) + " и нажмите «Продолжить · " + app(platform) + "».",
+                    link("Открыть " + app(other), commands.privateLink(other, "link_" + token)),
                     button("Проверить подключение", "linkReady"), back(draft));
         }
 
         Screen continueLink(Draft draft) {
-            if (commands.targetUser(platform, owner) == null) return linkMax(draft);
-            if (draft.source() == null) return home("Аккаунт MAX подключён.");
-            if (state.view().equals("link") && draft.target() != null && draft.mode() != null
-                    && draft.editing().equals("filter")) return review(draft);
-            return targets(draft, 0);
+            String next = state.view().substring("link:".length());
+            if (!store.identity(platform, owner).linked()) return linkAccounts(draft, next);
+            return switch (next) {
+                case "sources" -> choices(draft, true, 0);
+                case "targets" -> choices(draft, false, 0);
+                case "review" -> review(draft);
+                default -> home(LINKED);
+            };
         }
 
         String summary(Draft draft) {
+            String name = draft.name().isBlank() ? "" : "Название: " + draft.name() + "\n";
             String words = draft.words().isEmpty() ? "" : "\nСлова: " + wordList(draft.words());
-            return "Откуда: " + chatLabel(platform, draft.source(), false)
-                    + "\nКуда: " + chatLabel("max", draft.target(), true)
+            return name + app(draft.from()) + " → " + app(draft.to())
+                    + "\nИсточник: " + chatLabel(draft.from(), draft.source(), true)
+                    + "\nНазначение: " + chatLabel(draft.to(), draft.target(), false)
                     + "\nФильтр: " + filterLabel(draft.mode()) + words;
         }
 
-        String chatLabel(String platform, String chat, boolean destination) {
-            String maxUser = commands.targetUser(this.platform, owner);
-            var info = destination ? maxUser == null ? null : access.target(chat, maxUser)
-                    : access.source(platform, chat, owner);
+        String chatLabel(String platform, String chat, boolean source) {
+            String user = store.identity(this.platform, owner).on(platform);
+            var info = access.visibleChat(platform, chat, user, source);
             return info == null ? "Чат недоступен" : title(info);
         }
 
@@ -452,13 +470,12 @@ final class Menu {
     }
 
     private static Button back(Draft draft) {
-        return draft.route() > 0 ? button("К настройкам пересылки", "route:" + draft.route()) : HOME;
+        return draft.route() > 0 ? button("К профилю", "profile:" + draft.route()) : HOME;
     }
 
-    private static int page(String arg) {
-        return arg.isEmpty() ? 0 : Integer.parseInt(arg);
-    }
-
+    private static int page(String arg) { return arg.isEmpty() ? 0 : Integer.parseInt(arg); }
+    private static String other(String platform) { return platform.equals("telegram") ? "max" : "telegram"; }
+    private static String app(String platform) { return platform.equals("telegram") ? "Telegram" : "MAX"; }
     private static String title(JsonNode chat) { return safeTitle(first(text(chat, "title"), "Чат без названия")); }
 
     static String filterLabel(String mode) {
@@ -475,9 +492,6 @@ final class Menu {
         return preview.equals(list) ? list : preview + "… (всего " + words.size() + ")";
     }
 
-    private static Button button(String label, String action) {
-        return new Button(truncate(label, 58), action, null);
-    }
-
+    private static Button button(String label, String action) { return new Button(truncate(label, 58), action, null); }
     private static Button link(String label, String url) { return new Button(label, null, url); }
 }

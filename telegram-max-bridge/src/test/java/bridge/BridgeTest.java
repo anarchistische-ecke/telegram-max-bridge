@@ -43,6 +43,7 @@ class BridgeTest {
     private static final long TG_OTHER = 102;
     private static final long TG_BOT = 103;
     private static final long TG_GROUP = -1001234569870L;
+    private static final long TG_CHANNEL = -1001234569872L;
     private static final long TG_GROUP_TWO = -1001234569871L;
     private static final long MAX_OWNER = 9007199254740997L;
     private static final long MAX_OTHER = 9007199254740999L;
@@ -148,22 +149,17 @@ class BridgeTest {
     }
 
     @Test
-    void maxSourceUsesNativeForwardAndReturnReply() throws Exception {
+    void maxSourceGroupButtonStartsTheReverseDirection() throws Exception {
         rig = new Rig(temp);
         rig.max("/bridge", MAX_OWNER, MAX_SOURCE, "chat", null);
-        assertTrue(text(maxButtons(rig.platforms.to(MAX_SOURCE).getFirst().body()).path(0).path(0), "url")
-                .endsWith("start=src_" + MAX_SOURCE));
-        rig.max("/source " + MAX_SOURCE, MAX_OWNER, 731, "dialog", null);
-        rig.max("/route " + MAX_GROUP + " include urgent", MAX_OWNER, 731, "dialog", null);
-        var source = rig.maxEvent("Urgent", MAX_OWNER, MAX_SOURCE, "chat", null);
-        rig.send("max", source);
-        String sourceMid = text(source.path("message").path("body"), "mid");
-        var forward = rig.platforms.to(MAX_GROUP).getFirst();
-        assertEquals(object("type", "forward", "mid", sourceMid), forward.body().path("link"));
-        rig.max("Responding", MAX_OTHER, MAX_GROUP, "chat", forward.mid());
-        var reply = rig.platforms.to(MAX_SOURCE).getLast().body();
-        assertEquals(object("type", "reply", "mid", sourceMid), reply.path("link"));
-        assertTrue(text(reply, "text").contains("Responding"));
+        String url = text(maxButtons(rig.platforms.to(MAX_SOURCE).getFirst().body()).path(0).path(0), "url");
+        assertTrue(url.endsWith("start=src_" + MAX_SOURCE));
+        rig.send("max", object("update_type", "bot_started", "timestamp", 12,
+                "user", object("user_id", MAX_OWNER), "payload", "src_" + MAX_SOURCE));
+        assertTrue(rig.maxButton("Открыть Telegram").contains("start=link_"));
+        var draft = rig.store.menu("max", Long.toString(MAX_OWNER)).draft();
+        assertEquals("telegram", draft.to());
+        assertEquals(Long.toString(MAX_SOURCE), draft.source());
     }
 
     @Test
@@ -399,10 +395,13 @@ class BridgeTest {
         rig.send("max", object("update_type", "bot_added", "chat_id", MAX_CHANNEL, "timestamp", 1));
         rig.telegram("/start", TG_OWNER, TG_OWNER, 1);
 
-        String initial = rig.telegramButton("Настроить пересылку");
+        String initial = rig.telegramButton("Новый профиль");
         rig.telegramClick(TG_OWNER, initial.replace(":new", ":save"));
         assertTrue(text(rig.platforms.telegramAnswers.getLast(), "text").contains("устарело"));
+        assertTrue(rig.platforms.telegramSends.stream().anyMatch(value ->
+                value.path("reply_markup").path("is_persistent").asBoolean(false)));
         rig.telegramClick(TG_OWNER, initial);
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Telegram → MAX"));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Dispatch"));
         String link = rig.telegramButton("Открыть MAX");
         String code = link.substring(link.indexOf("start=") + 6);
@@ -411,28 +410,28 @@ class BridgeTest {
                 "user", object("user_id", MAX_OWNER), "payload", code));
         var maxScreen = rig.platforms.to(MAX_OWNER).getLast().body();
         assertTrue(text(maxScreen, "text").contains("Аккаунты связаны"));
-        assertTrue(buttonValue(maxButtons(maxScreen), "Продолжить в Telegram", "payload").endsWith("start=resume"));
+        assertTrue(buttonValue(maxButtons(maxScreen), "Продолжить · Telegram", "payload").endsWith("start=resume"));
 
         rig.reopen();
         rig.telegram("/start resume", TG_OWNER, TG_OWNER, 2);
         rig.telegramClick(TG_OWNER, rig.telegramButton("Room " + MAX_GROUP));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Только с нужными словами"));
         rig.telegram("заявка, срочный ремонт", TG_OWNER, TG_OWNER, 3);
-        assertTrue(rig.lastTelegram().contains("Проверьте настройки"));
+        assertTrue(rig.lastTelegram().contains("Проверьте профиль"));
         assertTrue(rig.store.routes("telegram", Long.toString(TG_OWNER), 0, 8).isEmpty());
-        rig.telegramClick(TG_OWNER, rig.telegramButton("Запустить пересылку"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Создать и запустить"));
         var saved = rig.store.routes("telegram", Long.toString(TG_OWNER), 0, 8).getFirst();
         assertEquals(List.of("заявка", "срочный ремонт"), saved.terms());
         assertEquals(Long.toString(MAX_GROUP), saved.target());
 
         rig.telegramClick(TG_OWNER, rig.telegramButton("Главное меню"));
-        rig.telegramClick(TG_OWNER, rig.telegramButton("Мои пересылки"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Мои профили"));
         rig.telegramClick(TG_OWNER, rig.telegramButtonPrefix("Dispatch → "));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Приостановить"));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Изменить фильтр"));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Все сообщения"));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Сохранить"));
-        rig.telegramClick(TG_OWNER, rig.telegramButton("Изменить чат MAX"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Изменить чат назначения"));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Room " + MAX_CHANNEL + " · канал"));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Сохранить"));
         var edited = rig.store.routes("telegram", Long.toString(TG_OWNER), 0, 8).getFirst();
@@ -442,37 +441,106 @@ class BridgeTest {
         assertFalse(edited.active());
         rig.telegramClick(TG_OWNER, rig.telegramButton("Возобновить"));
         assertTrue(rig.store.route("telegram", Long.toString(TG_OWNER), saved.id()).active());
-        rig.telegramClick(TG_OWNER, rig.telegramButton("Удалить пересылку"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Удалить профиль"));
         assertNotNull(rig.store.route("telegram", Long.toString(TG_OWNER), saved.id()));
         rig.telegramClick(TG_OWNER, rig.telegramButton("Удалить"));
         assertNull(rig.store.route("telegram", Long.toString(TG_OWNER), saved.id()));
     }
 
     @Test
-    void maxWizardUsesRussianButtonsAndCanCreateAStopWordFilter() throws Exception {
+    void maxWizardLinksTelegramCreatesReverseProfileAndReturnsReplies() throws Exception {
         rig = new Rig(temp);
-        for (long id : List.of(MAX_SOURCE, MAX_GROUP)) {
-            rig.send("max", object("update_type", "bot_added", "chat_id", id, "timestamp", 1));
+        rig.send("max", object("update_type", "bot_added", "chat_id", MAX_SOURCE, "timestamp", 1));
+        for (long id : List.of(TG_GROUP, TG_CHANNEL)) {
+            rig.send("telegram", object("update_id", rig.updateId.incrementAndGet(), "my_chat_member",
+                    object("chat", object("id", id, "type", id == TG_CHANNEL ? "channel" : "supergroup"),
+                            "new_chat_member", object("status", "administrator"))));
         }
         rig.send("max", object("update_type", "bot_started", "chat_id", 73,
                 "timestamp", 5, "user", object("user_id", MAX_OWNER), "payload", ""));
-        String start = rig.maxButton("Настроить пересылку");
+        String start = rig.maxButton("Новый профиль");
         rig.maxClick(start);
         rig.maxClick(start);
         assertTrue(text(rig.platforms.maxAnswers.getLast(), "notification").contains("устарело"));
+        rig.maxClick(rig.maxButton("MAX → Telegram"));
         rig.maxClick(rig.maxButton("Room " + MAX_SOURCE));
-        rig.maxClick(rig.maxButton("Room " + MAX_GROUP));
+        String link = rig.maxButton("Открыть Telegram");
+        String code = link.substring(link.indexOf("start=") + 6);
+        rig.telegram("/start " + code, TG_OWNER, TG_OWNER, 1);
+        assertTrue(rig.lastTelegram().contains("Аккаунты связаны"));
+        assertTrue(rig.telegramButton("Продолжить · MAX").endsWith("start=resume"));
+        rig.send("max", object("update_type", "bot_started", "chat_id", 73,
+                "timestamp", 6, "user", object("user_id", MAX_OWNER), "payload", "resume"));
+        assertFalse(maxButtons(rig.platforms.to(MAX_OWNER).getLast().body()).toString().contains("Новости"));
+        rig.platforms.telegramChannelWrite = true;
+        rig.maxClick(rig.maxButton("Обновить список"));
+        assertTrue(maxButtons(rig.platforms.to(MAX_OWNER).getLast().body()).toString().contains("Новости"));
+        rig.maxClick(rig.maxButton("Dispatch"));
         rig.maxClick(rig.maxButton("Все, кроме сообщений со стоп-словами"));
         rig.max(",,", MAX_OWNER, 73, "dialog", null);
         assertTrue(text(rig.platforms.to(MAX_OWNER).getLast().body(), "text").contains("Введите от 1 до 30"));
         rig.max("реклама\nспам", MAX_OWNER, 73, "dialog", null);
-        rig.maxClick(rig.maxButton("Запустить пересылку"));
-        var route = rig.store.routes("max", Long.toString(MAX_OWNER), 0, 8).getFirst();
-        assertEquals("exclude", route.mode());
-        assertEquals(List.of("реклама", "спам"), route.terms());
+        rig.maxClick(rig.maxButton("Дать название"));
+        rig.max("Рабочие заявки", MAX_OWNER, 73, "dialog", null);
+        rig.maxClick(rig.maxButton("Создать и запустить"));
+        var profile = rig.store.userProfiles("max", Long.toString(MAX_OWNER), 0, 8).getFirst();
+        assertEquals("telegram", profile.targetPlatform());
+        assertEquals("Рабочие заявки", profile.name());
+        assertEquals("exclude", profile.mode());
+        assertEquals(List.of("реклама", "спам"), profile.terms());
+        assertTrue(rig.store.userProfiles("telegram", Long.toString(TG_OTHER), 0, 8).isEmpty());
+        rig.telegram("Мои профили", TG_OWNER, TG_OWNER, 2);
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Рабочие заявки"));
+        assertTrue(rig.lastTelegram().contains("MAX → Telegram"));
+
         rig.max("Это реклама", MAX_OWNER, MAX_SOURCE, "chat", null);
-        rig.max("Новая заявка", MAX_OWNER, MAX_SOURCE, "chat", null);
-        assertEquals(1, rig.platforms.to(MAX_GROUP).size());
+        var source = rig.maxEvent("Новая заявка", MAX_OWNER, MAX_SOURCE, "chat", null);
+        rig.send("max", source);
+        var delivered = rig.platforms.telegramSends.stream().filter(value -> value.path("chat_id").asLong() == TG_GROUP).toList();
+        assertEquals(1, delivered.size());
+        assertTrue(text(delivered.getFirst(), "text").contains("Новая заявка"));
+        int forwardedId = rig.platforms.telegramMessageId;
+        var reply = rig.telegramEvent("Принято", TG_OTHER, TG_GROUP, 8);
+        ((ObjectNode) reply.path("message")).set("reply_to_message", object("message_id", forwardedId,
+                "from", object("id", TG_BOT, "is_bot", true)));
+        rig.send("telegram", reply);
+        var relayed = rig.platforms.to(MAX_SOURCE).getLast().body();
+        assertTrue(text(relayed, "text").contains("Принято"));
+        assertEquals(object("type", "reply", "mid", text(source.path("message").path("body"), "mid")), relayed.path("link"));
+
+        String oldMaxPause = rig.maxButton("Приостановить");
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Изменить чат назначения"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Новости · канал"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Сохранить"));
+        rig.maxClick(oldMaxPause);
+        assertTrue(text(rig.platforms.to(MAX_OWNER).getLast().body(), "text").contains("Профиль уже изменён"));
+        assertTrue(rig.store.userProfile("telegram", Long.toString(TG_OWNER), profile.id()).active());
+        rig.max("Заявка для канала", MAX_OWNER, MAX_SOURCE, "chat", null);
+        assertTrue(rig.platforms.telegramSends.stream().anyMatch(value -> value.path("chat_id").asLong() == TG_CHANNEL
+                && text(value, "text").contains("Заявка для канала")));
+
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Изменить направление"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Telegram → MAX"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Dispatch"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Room " + MAX_SOURCE));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Сохранить"));
+        var changed = rig.store.userProfile("max", Long.toString(MAX_OWNER), profile.id());
+        assertEquals("telegram", changed.platform());
+        assertEquals("max", changed.targetPlatform());
+        assertEquals(profile.terms(), changed.terms());
+        assertEquals(profile.name(), changed.name());
+
+        rig.telegram("Новый профиль", TG_OWNER, TG_OWNER, 9);
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Telegram → MAX"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Dispatch"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Room " + MAX_SOURCE));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Все сообщения"));
+        rig.telegramClick(TG_OWNER, rig.telegramButton("Создать и запустить"));
+        var profiles = rig.store.userProfiles("max", Long.toString(MAX_OWNER), 0, 8);
+        assertEquals(List.of("exclude", "all"), profiles.stream().map(Store.Route::mode).toList());
+        int before = rig.platforms.to(MAX_SOURCE).size();
+        rig.telegram("Заявка по двум профилям", TG_OWNER, TG_GROUP, 10);
+        assertEquals(before + 1, rig.platforms.to(MAX_SOURCE).size());
     }
 
     private static JsonNode telegramButtons(JsonNode body) {
@@ -620,11 +688,11 @@ class BridgeTest {
         }
 
         String telegramButton(String label) {
-            return buttonValue(telegramButtons(platforms.telegramSends.getLast()), label, "callback_data");
+            return buttonValue(telegramButtons(privateTelegramMenu()), label, "callback_data");
         }
 
         String telegramButtonPrefix(String label) {
-            var rows = telegramButtons(platforms.telegramSends.getLast());
+            var rows = telegramButtons(privateTelegramMenu());
             for (var row : rows) {
                 for (var button : row) {
                     if (text(button, "text").startsWith(label)) {
@@ -633,6 +701,12 @@ class BridgeTest {
                 }
             }
             throw new AssertionError("Button missing: " + label);
+        }
+
+        JsonNode privateTelegramMenu() {
+            return platforms.telegramSends.stream()
+                    .filter(item -> item.path("chat_id").asLong() == TG_OWNER && telegramButtons(item).isArray())
+                    .reduce((earlier, later) -> later).orElseThrow();
         }
 
         String maxButton(String label) {
@@ -734,6 +808,8 @@ class BridgeTest {
         volatile String telegramMultipart;
         volatile boolean protectedSource;
         volatile boolean channelWrite = true;
+        volatile boolean telegramChannelWrite;
+        volatile int telegramMessageId;
         volatile String blockOn;
 
         Platforms() throws IOException {
@@ -794,14 +870,19 @@ class BridgeTest {
                 case "getChatMember" -> {
                     long user = body.path("user_id").asLong();
                     yield object("status", user == TG_BOT ? "administrator" :
-                            telegramMembers.contains(user) ? "member" : "left");
+                            telegramMembers.contains(user) ? "member" : "left",
+                            "can_post_messages", telegramChannelWrite);
                 }
-                case "getChat" -> object("id", body.path("chat_id"), "type", "supergroup", "title", "Dispatch",
+                case "getChat" -> object("id", body.path("chat_id"), "type",
+                        body.path("chat_id").asLong() == TG_CHANNEL ? "channel" : "supergroup", "title",
+                        body.path("chat_id").asLong() == TG_CHANNEL ? "Новости" : "Dispatch",
                         "has_protected_content", protectedSource);
                 case "getFile" -> object("file_path", text(body, "file_id"));
                 case "sendMessage", "editMessageText" -> {
                     telegramSends.add(body);
-                    yield object("message_id", nextMid.incrementAndGet());
+                    int messageId = Math.toIntExact(nextMid.incrementAndGet());
+                    if (body.path("chat_id").asLong() == TG_GROUP) telegramMessageId = messageId;
+                    yield object("message_id", messageId);
                 }
                 case "answerCallbackQuery" -> {
                     telegramAnswers.add(body);

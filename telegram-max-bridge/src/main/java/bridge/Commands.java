@@ -47,6 +47,9 @@ final class Commands {
 
     String privateCommand(Store.Job job, String user, Command command) {
         String platform = job.platform();
+        if (platform.equals("max")) {
+            return HELP;
+        }
         String name = command.name();
         String arg = command.argument();
         try {
@@ -195,8 +198,8 @@ final class Commands {
             default -> "удалена";
         };
         String result = "Пересылка №" + id + " " + status + ".";
-        store.changeRoute(route, name, result, job.seq());
-        return result;
+        return store.changeRoute(route, name, result, job.seq()) ? result
+                : "Профиль уже изменён. Откройте «Мои профили».";
     }
 
     String targetUser(String platform, String user) {

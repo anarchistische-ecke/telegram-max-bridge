@@ -1,15 +1,15 @@
 # Telegram to MAX bridge
 
-Forward new messages from Telegram or MAX groups to a MAX group or channel. A reply made directly to a forwarded copy in a MAX group goes back as a reply to the original message. Telegram forum replies stay in the original topic.
+Forward new messages from Telegram groups to MAX or from MAX groups to Telegram. Destinations can be groups or channels. A direct reply in a destination group goes back to the original message. Replies in Telegram forum sources stay in the original topic.
 
-Each member configures their own routes in a private bot chat. A route applies to messages from the whole source group and has one destination and one filter. Members can create routes to multiple destinations. If several profiles match the same message and destination, the bridge posts a single copy there.
+Each member configures their own profiles in a private bot chat. A profile has a direction, one source group, one destination, and its own filter. Linked accounts can manage the same profiles in either bot.
 
-## Как настроить пересылку
+## Как настроить профиль
 
-1. Добавьте бота администратором в группу-источник и в группу или канал MAX, куда нужно пересылать сообщения. В MAX дайте боту права на чтение сообщений, а для канала ещё и на публикацию.
-2. Откройте личный чат с ботом в Telegram или MAX, нажмите «Старт» и выберите **«Настроить пересылку»**. В списке будут чаты, где вы состоите и бот может работать.
-3. Выберите группу-источник и чат MAX по названию. При первой настройке из Telegram бот предложит один раз связать аккаунты. Нажмите **«Открыть MAX»**, затем **«Продолжить в Telegram»**.
-4. Выберите фильтр, проверьте настройки и нажмите **«Запустить пересылку»**.
+1. Добавьте ботов администраторами в группу-источник и в группу или канал назначения. В MAX дайте боту право читать сообщения, а для канала на любой платформе добавьте право публикации.
+2. Откройте личный чат с ботом в Telegram или MAX, нажмите «Старт» и выберите **«Новый профиль»**. Выберите направление **Telegram → MAX** или **MAX → Telegram**.
+3. Выберите группу-источник и чат назначения по названию. При первой настройке бот предложит связать аккаунты. Откройте второе приложение по кнопке и вернитесь по кнопке «Продолжить». После этого список профилей доступен в обоих ботах.
+4. Выберите фильтр, при желании дайте профилю название и нажмите **«Создать и запустить»**.
 
 | Фильтр | Какие сообщения пересылаются |
 | --- | --- |
@@ -19,9 +19,13 @@ Each member configures their own routes in a private bot chat. A route applies t
 
 Слова и фразы можно ввести через запятую или с новой строки. Бот учитывает текст и подписи к вложениям. Регистр букв значения не имеет.
 
-**Чтобы изменить настройки**, откройте **«Мои пересылки»** и выберите нужную. Там можно поменять источник, чат MAX или фильтр, поставить пересылку на паузу, возобновить или удалить её.
+У каждого профиля свой фильтр. Если одному сообщению соответствуют несколько профилей с одним и тем же назначением, бот перешлёт его туда один раз.
 
-Если группа-источник ещё не появилась в списке, отправьте в ней `/bridge` и нажмите кнопку в ответе бота. Чтобы ответить в исходную группу, используйте «Ответить» на пересланном сообщении в группе MAX.
+**Чтобы изменить настройки**, откройте **«Мои профили»**. Можно сменить направление, источник, назначение, фильтр или название, а также приостановить, возобновить или удалить профиль. В Telegram есть кнопки под полем ввода, в MAX — кнопки под сообщением бота.
+
+Если группа-источник ещё не появилась в списке, отправьте в ней `/bridge` и нажмите кнопку в ответе бота. Если бот уже был добавлен в канал до установки этой версии, обновите его права, чтобы платформа прислала сведения о канале. Чтобы ответить в исходную группу, используйте «Ответить» на пересланном сообщении в группе назначения.
+
+Пересылки из предыдущей версии Telegram → MAX доступны как профили. Старые пересылки MAX → MAX приостановлены.
 
 ## Run the bridge
 
@@ -61,8 +65,8 @@ Build the JAR, stop the Python service, and back up the SQLite database. Start t
 ## Delivery behavior
 
 - The bridge picks up new messages after activation and ignores its own posts to prevent loops. Edits, deletions, older history, and service events do not sync. Messages from other bots are eligible when the platform delivers them to the bridge. [Telegram bot-to-bot updates](https://core.telegram.org/api/bots/bot-to-bot)
-- MAX-to-MAX forwarding uses the native forward operation. Telegram-to-MAX messages include source and sender attribution. Photos, videos, audio, and files can cross platforms up to 20 MB. Some specialized message types appear as text or a placeholder. Media albums arrive as individual Telegram updates. Rich text is reduced to plain text with embedded link URLs retained. [Telegram files](https://core.telegram.org/bots/api#getfile) · [MAX media](https://dev.max.ru/docs-api/use-cases/sending-messages/media/)
-- MAX groups support return replies. MAX channels receive posts only. Direct replies to a forwarded copy are associated with its exact original message, so the original must still exist. Telegram content protection is respected. [Telegram reply parameters](https://core.telegram.org/bots/api#replyparameters) · [MAX message links](https://dev.max.ru/docs-api/objects/NewMessageBody)
+- Forwarded messages include source and sender attribution. Photos, videos, audio, and files can cross platforms up to 20 MB. Some specialized message types appear as text or a placeholder. Media albums arrive as individual Telegram updates. Rich text is reduced to plain text with embedded link URLs retained. [Telegram files](https://core.telegram.org/bots/api#getfile) · [MAX media](https://dev.max.ru/docs-api/use-cases/sending-messages/media/)
+- Destination groups support return replies. Destination channels receive posts only. Direct replies to a forwarded copy are associated with its exact original message, so the original must still exist. Telegram content protection is respected. [Telegram reply parameters](https://core.telegram.org/bots/api#replyparameters) · [MAX message links](https://dev.max.ru/docs-api/objects/NewMessageBody)
 - Webhooks are acknowledged after SQLite commits the update. Delivery retries temporary failures and records each successful send. In the rare case where a send succeeds remotely but the API acknowledgement or local write is interrupted, the platform can show a duplicate. The service clears processed webhook bodies and keeps recent event IDs for deduplication and message IDs for replies.
 
 ## Delivery capacity

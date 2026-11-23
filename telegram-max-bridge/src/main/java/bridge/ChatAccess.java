@@ -39,15 +39,31 @@ final class ChatAccess {
     }
 
     JsonNode target(String chat, String maxUser) {
-        JsonNode info = maxChat(chat, null);
-        return info != null && isMember("max", chat, maxUser) ? info : null;
+        return target("max", chat, maxUser);
+    }
+
+    JsonNode target(String platform, String chat, String user) {
+        if (user == null) return null;
+        JsonNode info = destination(platform, chat);
+        return info != null && isMember(platform, chat, user) ? info : null;
+    }
+
+    JsonNode destination(String platform, String chat) {
+        if (platform.equals("max")) return maxChat(chat, null);
+        var bot = available(() -> telegram.member(chat, telegramBotId));
+        if (bot == null || !text(bot, "status").equals("administrator")) return null;
+        var info = available(() -> telegram.chat(chat));
+        if (info == null) return null;
+        String type = text(info, "type");
+        return List.of("group", "supergroup").contains(type)
+                || type.equals("channel") && bot.path("can_post_messages").asBoolean(false) ? info : null;
     }
 
     JsonNode visibleChat(String platform, String chat, String user, boolean source) {
         if (user == null || !isMember(platform, chat, user)) {
             return null;
         }
-        return source ? source(platform, chat) : maxChat(chat, null);
+        return source ? source(platform, chat) : destination(platform, chat);
     }
 
     JsonNode maxChat(String chat, String expectedKind) {

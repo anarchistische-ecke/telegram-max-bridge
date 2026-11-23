@@ -102,13 +102,13 @@ public final class Main {
         max.post("/subscriptions", object("url", base + "/webhook/max", "secret", secrets.max(),
                 "update_types", Update.MAX_TYPES));
         var start = object("command", "start", "description", "Открыть главное меню");
-        var group = object("command", "bridge", "description", "Настроить пересылку из этой группы");
+        var group = object("command", "bridge", "description", "Создать профиль для этой группы");
         telegram.call("setMyCommands", object("commands", java.util.List.of(start),
                 "scope", object("type", "all_private_chats")));
         telegram.call("setMyCommands", object("commands", java.util.List.of(group),
                 "scope", object("type", "all_group_chats")));
-        max.commands(java.util.List.of(object("name", "start", "description", "Открыть меню пересылки"),
-                object("name", "bridge", "description", "Настроить пересылку из этой группы")));
+        max.commands(java.util.List.of(object("name", "start", "description", "Открыть меню профилей"),
+                object("name", "bridge", "description", "Создать профиль для этой группы")));
     }
 
     private static void serve(Path db, InetSocketAddress address, Secrets secrets, Telegram telegram, Max max,

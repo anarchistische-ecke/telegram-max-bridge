@@ -16,6 +16,8 @@ import static bridge.Content.*;
 import static bridge.Json.*;
 import static bridge.Transport.*;
 
+import bridge.Store.Destination;
+
 final class Bridge {
     private static final Logger LOG = Logger.getLogger(Bridge.class.getName());
     private final Store store;
@@ -27,7 +29,7 @@ final class Bridge {
     private final String telegramBotId;
     private final String maxBotId;
     private final Semaphore media;
-    private final Map<String, Integer> forwardsInFlight = new ConcurrentHashMap<>();
+    private final Map<Destination, Integer> forwardsInFlight = new ConcurrentHashMap<>();
 
     Bridge(Store store, Telegram telegram, Max max, JsonNode telegramBot, JsonNode maxBot, int concurrentMedia) {
         this.store = store;
@@ -56,7 +58,7 @@ final class Bridge {
             } else if (update.has("my_chat_member")) {
                 var membership = update.path("my_chat_member");
                 var chat = membership.path("chat");
-                if (List.of("group", "supergroup").contains(text(chat, "type")) && chat.hasNonNull("id")) {
+                if (List.of("group", "supergroup", "channel").contains(text(chat, "type")) && chat.hasNonNull("id")) {
                     String id = text(chat, "id");
                     if (text(membership.path("new_chat_member"), "status").equals("administrator")) {
                         store.rememberTelegramChat(id);
@@ -84,6 +86,11 @@ final class Bridge {
         boolean group = List.of("group", "supergroup").contains(text(chat, "type"));
         if (group) {
             store.rememberTelegramChat(id);
+        }
+        if (group && !message.path("has_protected_content").asBoolean(false)
+                && !chat.path("has_protected_content").asBoolean(false)
+                && handleTelegramReply(job, id, senderId, message)) {
+            return;
         }
         var command = sender.path("is_bot").asBoolean(false) ? null : commands.parse("telegram", text(message, "text"));
         if (command != null) {
@@ -115,7 +122,8 @@ final class Bridge {
         String header = senderName + " · Telegram / " + safeTitle(first(text(chat, "title"), id));
         String mid = text(message, "message_id");
         String thread = telegramThread(message);
-        deliverRoutes(job.platform(), id, routes, target -> forwardTelegram(job, id, mid, thread, target, header, content));
+        deliverRoutes(job.platform(), id, routes, target -> sendTelegramContentToMax(job, target.id(), null, header, content, "forward:" + target.id(),
+                new Store.Origin(target, "telegram", id, mid, thread)));
     }
 
     private static String telegramThread(JsonNode message) {
@@ -196,9 +204,12 @@ final class Bridge {
             return;
         }
         String title = safeTitle(first(text(source, "title"), chat));
-        deliverRoutes("max", chat, routes, target -> once(job, "forward:" + target,
-                () -> max.send(target, null, "Из группы «" + title + "»", object("type", "forward", "mid", mid), null),
-                new Store.Origin(target, "max", chat, mid, null)));
+        String header = safeTitle(displayName(sender)) + " · MAX / " + title;
+        deliverRoutes("max", chat, routes, target -> {
+            var origin = new Store.Origin(target, "max", chat, mid, null);
+            sendMaxContentToTelegram(job, message, target.id(), null, null, header,
+                    "forward:telegram:" + target.id(), origin);
+        });
     }
 
     private boolean handleMaxReply(Store.Job job, String chat, String user, JsonNode message) {
@@ -207,8 +218,9 @@ final class Bridge {
         if (!text(link, "type").equals("reply") || parent.isEmpty()) {
             return false;
         }
-        boolean pendingForward = forwardsInFlight.containsKey(chat);
-        var origin = store.origin(chat, parent);
+        var destination = new Destination("max", chat);
+        boolean pendingForward = forwardsInFlight.containsKey(destination);
+        var origin = store.origin(destination, parent);
         if (origin == null) {
             String parentSender = value(link.path("sender"), "user_id");
             if (pendingForward && (parentSender == null || parentSender.equals(maxBotId))
@@ -223,7 +235,37 @@ final class Bridge {
         return true;
     }
 
+    private boolean handleTelegramReply(Store.Job job, String chat, String user, JsonNode message) {
+        var reply = message.path("reply_to_message");
+        String parent = value(reply, "message_id");
+        if (parent == null) return false;
+        var destination = new Destination("telegram", chat);
+        boolean pending = forwardsInFlight.containsKey(destination);
+        var origin = store.origin(destination, parent);
+        if (origin == null) {
+            if (pending && telegramBotId.equals(value(reply.path("from"), "id"))
+                    && Store.now() - job.received() < 30) {
+                throw new DeliveryQueue.Defer();
+            }
+            return false;
+        }
+        if (user != null && access.target("telegram", chat, user) != null
+                && access.source(origin.platform(), origin.source()) != null) {
+            var content = telegramMessage(message);
+            if (content != null) {
+                String header = safeTitle(displayName(message.path("from"))) + " · Telegram";
+                sendTelegramContentToMax(job, origin.source(), object("type", "reply", "mid", origin.message()),
+                        header, content, "return:telegram", null);
+            }
+        }
+        return true;
+    }
+
     private void privateCommand(Store.Job job, String user, Commands.Command command) {
+        if (job.platform().equals("telegram") && command.name().equals("start")
+                && (command.argument().isEmpty() || store.menu("telegram", user) == null)) {
+            once(job, "telegram-navigation", () -> telegram.navigation(user));
+        }
         var screen = menu.entry(job, user, command);
         if (screen != null) {
             showMenu(job, user, null, screen);
@@ -277,22 +319,22 @@ final class Bridge {
         });
     }
 
-    private Map<String, List<Store.Route>> matchingRoutes(Store.Job job, String source, String text) {
+    private Map<Destination, List<Store.Route>> matchingRoutes(Store.Job job, String source, String text) {
         var routes = store.activeRoutes(job.platform(), source, job.received());
-        Map<String, List<Store.Route>> targets = new LinkedHashMap<>();
+        Map<Destination, List<Store.Route>> targets = new LinkedHashMap<>();
         if (!routes.isEmpty()) {
             String normalized = normalize(text);
             for (var route : routes) {
                 if (matches(route, normalized)) {
-                    targets.computeIfAbsent(route.target(), key -> new ArrayList<>()).add(route);
+                    targets.computeIfAbsent(new Destination(route.targetPlatform(), route.target()), key -> new ArrayList<>()).add(route);
                 }
             }
         }
         return targets;
     }
 
-    private void deliverRoutes(String platform, String source, Map<String, List<Store.Route>> routes,
-                               Consumer<String> send) {
+    private void deliverRoutes(String platform, String source, Map<Destination, List<Store.Route>> routes,
+                               Consumer<Destination> send) {
         ApiFailure retry = null;
         Map<String, Boolean> sourceMembership = new HashMap<>();
         for (var target : routes.entrySet()) {
@@ -300,7 +342,7 @@ final class Bridge {
                 return;
             }
             try {
-                if (access.maxChat(target.getKey(), null) != null
+                if (access.destination(target.getKey().platform(), target.getKey().id()) != null
                         && hasEligibleOwner(platform, source, target.getKey(), target.getValue(), sourceMembership)) {
                     send.accept(target.getKey());
                 }
@@ -308,7 +350,7 @@ final class Bridge {
                 if (error.retryable()) {
                     retry = later(retry, error);
                 } else {
-                    LOG.warning(() -> "Forwarding to MAX chat " + target.getKey() + " failed (" + error.getMessage() + ")");
+                    LOG.warning(() -> "Forwarding to chat " + target.getKey() + " failed (" + error.getMessage() + ")");
                 }
             }
         }
@@ -317,26 +359,26 @@ final class Bridge {
         }
     }
 
-    private boolean hasEligibleOwner(String platform, String source, String target, List<Store.Route> routes,
+    private boolean hasEligibleOwner(String platform, String source, Destination target, List<Store.Route> routes,
                                      Map<String, Boolean> sourceMembership) {
         ApiFailure retry = null;
         for (var route : routes) {
             String user = route.owner();
             try {
-                String maxUser = commands.targetUser(platform, user);
-                if (maxUser == null || !sourceMembership.computeIfAbsent(user,
-                        key -> access.isMember(platform, source, key)) || !access.isMember("max", target, maxUser)) {
+                String targetUser = store.identity(platform, user).on(target.platform());
+                if (targetUser == null || !sourceMembership.computeIfAbsent(user,
+                        key -> access.isMember(platform, source, key)) || !access.isMember(target.platform(), target.id(), targetUser)) {
                     continue;
                 }
                 var current = store.route(platform, user, route.id());
-                if (route.equals(current) && maxUser.equals(commands.targetUser(platform, user))) {
+                if (route.equals(current) && targetUser.equals(store.identity(platform, user).on(target.platform()))) {
                     return true;
                 }
             } catch (ApiFailure error) {
                 if (error.retryable()) {
                     retry = later(retry, error);
                 } else {
-                    LOG.warning(() -> "Could not check membership for MAX chat " + target + " (" + error.getMessage() + ")");
+                    LOG.warning(() -> "Could not check membership for chat " + target + " (" + error.getMessage() + ")");
                 }
             }
         }
@@ -350,30 +392,29 @@ final class Bridge {
         return current == null || next.retryAfter > current.retryAfter ? next : current;
     }
 
-    private void forwardTelegram(Store.Job job, String chat, String mid, String thread, String target, String header,
-                                 TelegramMessage content) {
+    private void sendTelegramContentToMax(Store.Job job, String target, JsonNode link, String header,
+                                          TelegramMessage content, String action, Store.Origin origin) {
         JsonNode prepared = content.media() == null ? object("attachment", content.attachment())
                 : once(job, "prepare-upload", () -> prepareUpload(content.media()));
-        // Python persisted uploads as a pair of attachment and fallback text.
+        // Older queue entries can carry uploads as a pair of attachment and fallback text.
         JsonNode attachment = prepared.isArray() ? prepared.path(0) : prepared.path("attachment");
         String note = prepared.isArray() ? prepared.path(1).asString("") : text(prepared, "note");
         String message = join("\n\n", header, content.rendered(), note);
-        var origin = new Store.Origin(target, "telegram", chat, mid, thread);
         int index = 0;
         for (String part : splitText(message, 3900)) {
             JsonNode useAttachment = index == 0 && attachment.isObject() ? attachment : null;
-            once(job, "forward:" + target + ":" + index++, () -> sendToMax(target, part, useAttachment), origin);
+            once(job, action + ":" + index++, () -> sendToMax(target, part, link, useAttachment), origin);
         }
     }
 
-    private JsonNode sendToMax(String target, String part, JsonNode attachment) {
+    private JsonNode sendToMax(String target, String part, JsonNode link, JsonNode attachment) {
         try {
-            return max.send(target, null, part, null, attachment);
+            return max.send(target, null, part, link, attachment);
         } catch (ApiFailure error) {
             if (attachment == null || error.retryable() || !List.of(400, 413, 415).contains(error.status)) {
                 throw error;
             }
-            return max.send(target, null, part + "\n\n[MAX не принял это вложение]", null, null);
+            return max.send(target, null, part + "\n\n[MAX не принял это вложение]", link, null);
         }
     }
 
@@ -401,24 +442,46 @@ final class Bridge {
         String header = safeTitle(displayName(message.path("sender"))) + " · MAX";
         var body = message.path("body");
         String text = join("\n\n", header, showLinkUrls(text(body, "text"), body.path("markup")));
-        boolean toTelegram = origin.platform().equals("telegram");
+        if (origin.platform().equals("telegram")) {
+            sendMaxContentToTelegram(job, message, origin.source(), origin.message(), origin.thread(), header, "return", null);
+            return;
+        }
         JsonNode link = object("type", "reply", "mid", origin.message());
         int index = 0;
         for (String part : splitText(text, 4000)) {
-            once(job, "return:text:" + index++, () -> toTelegram
-                    ? telegram.send(origin.source(), part, origin.message(), origin.thread(), null)
-                    : max.send(origin.source(), null, part, link, null));
+            once(job, "return:text:" + index++, () -> max.send(origin.source(), null, part, link, null));
         }
         index = 0;
         for (JsonNode attachment : body.path("attachments")) {
             if (!text(attachment, "type").equals("inline_keyboard")) {
-                once(job, "return:media:" + index++, () -> toTelegram
-                        ? replyMediaToTelegram(origin, attachment) : replyMediaToMax(origin.source(), link, attachment));
+                once(job, "return:media:" + index++, () -> replyMediaToMax(origin.source(), link, attachment));
             }
         }
     }
 
-    private JsonNode replyMediaToTelegram(Store.Origin origin, JsonNode attachment) {
+    private void sendMaxContentToTelegram(Store.Job job, JsonNode message, String chat, String reply, String thread,
+                                          String header, String action, Store.Origin origin) {
+        var body = message.path("body");
+        var forwarded = text(message.path("link"), "type").equals("forward")
+                ? message.path("link").path("message") : null;
+        String content = join("\n\n", header, showLinkUrls(text(body, "text"), body.path("markup")),
+                forwarded == null ? null : showLinkUrls(text(forwarded, "text"), forwarded.path("markup")));
+        int index = 0;
+        for (String part : splitText(content, 4000)) {
+            once(job, action + ":text:" + index++, () -> telegram.send(chat, part, reply, thread, null), origin);
+        }
+        var attachments = new ArrayList<JsonNode>();
+        body.path("attachments").forEach(attachments::add);
+        if (forwarded != null) forwarded.path("attachments").forEach(attachments::add);
+        index = 0;
+        for (JsonNode attachment : attachments) {
+            if (!text(attachment, "type").equals("inline_keyboard")) {
+                once(job, action + ":media:" + index++, () -> sendMaxMediaToTelegram(chat, reply, thread, attachment), origin);
+            }
+        }
+    }
+
+    private JsonNode sendMaxMediaToTelegram(String chat, String reply, String thread, JsonNode attachment) {
         String kind = text(attachment, "type");
         var payload = attachment.path("payload");
         String filename = first(value(payload, "filename"), value(payload, "name"),
@@ -428,7 +491,7 @@ final class Bridge {
             if (kind.equals("location") && attachment.has("latitude") && attachment.has("longitude")) {
                 note = "Местоположение: " + text(attachment, "latitude") + ", " + text(attachment, "longitude");
             } else if (MAX_FILENAMES.containsKey(kind)) {
-                return withMediaSlot(() -> telegram.send(origin.source(), null, origin.message(), origin.thread(),
+                return withMediaSlot(() -> telegram.send(chat, null, reply, thread,
                         new Upload("document", filename, max.download(attachment))));
             } else {
                 note = "[Вложение MAX]";
@@ -441,7 +504,7 @@ final class Bridge {
             }
             note = mediaNote(filename, "не удалось переслать вложение");
         }
-        return telegram.send(origin.source(), note, origin.message(), origin.thread(), null);
+        return telegram.send(chat, note, reply, thread, null);
     }
 
     private JsonNode replyMediaToMax(String chat, JsonNode link, JsonNode attachment) {
@@ -483,7 +546,7 @@ final class Bridge {
             return saved;
         }
         if (origin != null) {
-            forwardsInFlight.merge(origin.target(), 1, Integer::sum);
+            forwardsInFlight.merge(origin.destination(), 1, Integer::sum);
         }
         try {
             JsonNode result = execute.get();
@@ -491,7 +554,7 @@ final class Bridge {
             return result;
         } finally {
             if (origin != null) {
-                forwardsInFlight.compute(origin.target(), (chat, count) -> count == 1 ? null : count - 1);
+                forwardsInFlight.compute(origin.destination(), (chat, count) -> count == 1 ? null : count - 1);
             }
         }
     }

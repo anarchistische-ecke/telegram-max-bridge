@@ -13,6 +13,11 @@ CREATE TABLE IF NOT EXISTS link_codes (
     telegram TEXT NOT NULL UNIQUE,
     expires REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS max_link_codes (
+    digest TEXT PRIMARY KEY,
+    owner TEXT NOT NULL UNIQUE,
+    expires REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS max_chats (
     id TEXT PRIMARY KEY
 );
